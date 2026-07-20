@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AIOZ 工具导航</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: #f0f2f5;
+      color: #333;
+      min-height: 100vh;
+    }
+    .container { max-width: 860px; margin: 0 auto; padding: 48px 20px; }
+    header h1 { font-size: 1.9em; font-weight: 600; color: #1a73e8; }
+    header p { margin-top: 8px; color: #666; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; margin-top: 32px; }
+    a.card {
+      display: block;
+      background: #fff;
+      border-radius: 12px;
+      padding: 24px;
+      text-decoration: none;
+      color: inherit;
+      border: 1px solid #e3e6ea;
+      box-shadow: 0 1px 3px rgba(0,0,0,.05);
+      transition: box-shadow .15s, transform .15s;
+    }
+    a.card:hover { box-shadow: 0 4px 14px rgba(26,115,232,.15); transform: translateY(-2px); }
+    .card .icon { font-size: 1.8em; }
+    .card h2 { font-size: 1.15em; font-weight: 600; margin-top: 12px; color: #1a73e8; }
+    .card p { margin-top: 8px; font-size: .92em; color: #666; line-height: 1.5; }
+    footer { margin-top: 48px; text-align: center; font-size: .85em; color: #999; }
+    footer a { color: #999; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>AIOZ 工具导航</h1>
+      <p>团队内部工具集合</p>
+    </header>
+    <div class="grid">
+      <a class="card" href="/xlsx-image-link-to-image-tool/">
+        <div class="icon">📊</div>
+        <h2>XLSX 图片链接转图片工具</h2>
+        <p>将 Excel 表格中的图片链接批量转换为嵌入图片，在浏览器中本地处理，无需上传。</p>
+      </a>
+      <a class="card" href="/tampermonkey-scripts/">
+        <div class="icon">🐒</div>
+        <h2>篡改猴脚本</h2>
+        <p>团队维护的 Tampermonkey 用户脚本合集，支持一键安装与自动更新。</p>
+      </a>
+    </div>
+    <footer>
+      <a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a>
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>篡改猴脚本 · AIOZ 工具</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background-color: #f0f2f5;
+      color: #333;
+      min-height: 100vh;
+    }
+    .container { max-width: 860px; margin: 0 auto; padding: 48px 20px; }
+    .breadcrumb { font-size: .9em; margin-bottom: 16px; }
+    .breadcrumb a { color: #1a73e8; text-decoration: none; }
+    .breadcrumb a:hover { text-decoration: underline; }
+    header h1 { font-size: 1.9em; font-weight: 600; color: #1a73e8; }
+    header p { margin-top: 8px; color: #666; line-height: 1.6; }
+    .list { margin-top: 32px; display: flex; flex-direction: column; gap: 16px; }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 22px 24px;
+      border: 1px solid #e3e6ea;
+      box-shadow: 0 1px 3px rgba(0,0,0,.05);
+    }
+    .card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .card h2 { font-size: 1.15em; font-weight: 600; }
+    .badge {
+      font-size: .78em; font-weight: 600; color: #1a73e8;
+      background: #e8f0fe; border-radius: 20px; padding: 2px 10px;
+    }
+    .date { font-size: .82em; color: #999; margin-left: auto; }
+    .card p.desc { margin-top: 10px; font-size: .92em; color: #555; line-height: 1.6; }
+    .card .sites { margin-top: 8px; font-size: .8em; color: #999; word-break: break-all; }
+    .actions { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; }
+    .btn {
+      display: inline-block; text-decoration: none; font-size: .9em;
+      padding: 8px 18px; border-radius: 8px; transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn-install { background-color: #1a73e8; color: #fff; }
+    .btn-source { background-color: #f0f0f0; color: #333; }
+    .empty, .error { margin-top: 32px; color: #999; text-align: center; }
+    .howto {
+      margin-top: 40px; background: #fff; border: 1px solid #e3e6ea;
+      border-radius: 12px; padding: 22px 24px; font-size: .9em; color: #555;
+    }
+    .howto h3 { font-size: 1em; color: #333; margin-bottom: 10px; }
+    .howto ol { padding-left: 20px; line-height: 1.9; }
+    .howto a { color: #1a73e8; }
+    footer { margin-top: 48px; text-align: center; font-size: .85em; color: #999; }
+    footer a { color: #999; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="breadcrumb"><a href="/">← 返回工具导航</a></div>
+    <header>
+      <h1>🐒 篡改猴脚本</h1>
+      <p>团队维护的 Tampermonkey 用户脚本合集。点击「安装」即可添加到篡改猴，之后脚本更新时篡改猴会自动检测新版本并提示或自动更新。</p>
+    </header>
+
+    <div class="list" id="list"><div class="empty">加载中…</div></div>
+
+    <div class="howto">
+      <h3>使用说明</h3>
+      <ol>
+        <li>浏览器需先安装 <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">篡改猴（Tampermonkey）</a> 扩展。</li>
+        <li>点击脚本卡片中的「安装脚本」，在弹出的篡改猴页面中确认安装。</li>
+        <li>脚本更新后无需重新安装：篡改猴默认每天检查一次更新（可在 篡改猴设置 → 脚本更新 中调整为自动更新或手动确认）。</li>
+      </ol>
+    </div>
+
+    <footer>
+      <a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a>
+    </footer>
+  </div>
+
+  <script>
+    (async function () {
+      const list = document.getElementById('list');
+      try {
+        const resp = await fetch('manifest.json', { cache: 'no-cache' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const manifest = await resp.json();
+        if (!manifest.scripts || manifest.scripts.length === 0) {
+          list.innerHTML = '<div class="empty">暂无脚本</div>';
+          return;
+        }
+        const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        list.innerHTML = manifest.scripts.map(s => {
+          const sites = [...new Set((s.match || []).map(m => {
+            const h = m.match(/^[^:]+:\/\/([^/]+)/);
+            return h ? h[1].replace(/^\*\./, '') : m;
+          }))];
+          const siteLabel = sites.length > 4
+            ? sites.slice(0, 4).join('、') + ' 等 ' + sites.length + ' 个站点'
+            : sites.join('、');
+          return `
+            <div class="card">
+              <div class="card-head">
+                <h2>${esc(s.name)}</h2>
+                <span class="badge">v${esc(s.version)}</span>
+                <span class="date">更新于 ${esc(s.updated)}</span>
+              </div>
+              <p class="desc">${esc(s.description)}</p>
+              ${siteLabel ? `<div class="sites">适用站点：${esc(siteLabel)}</div>` : ''}
+              <div class="actions">
+                <a class="btn btn-install" href="${esc(s.file)}">安装脚本</a>
+                <a class="btn btn-source" href="https://github.com/26eg/tools.aioz.cc/blob/main/tampermonkey-scripts/${esc(s.file)}" target="_blank" rel="noopener">查看源码</a>
+              </div>
+            </div>`;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<div class="error">脚本清单加载失败：' + e.message + '</div>';
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>XLSX 图片链接转图片工具 v2.2丨Design by Edwin Z & Powered by Gemini 2.5 Pro</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 0 20px;
+        }
+        h1 {
+            color: #1a73e8;
+        }
+        input[type="file"] {
+            display: block;
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+        }
+        input[type="number"] {
+            width: 60px;
+            padding: 5px;
+            text-align: center;
+            border-radius: 5px;
+            border: 1px solid #ccc;
+            font-size: 0.95em;
+        }
+        button {
+            background-color: #1a73e8;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 1em;
+			padding: 10px;
+			border-radius: 5px;
+        }
+        button:disabled {
+            background-color: #a0c3ff;
+            cursor: not-allowed;
+        }
+		.button-container {
+			display: flex;
+			align-items: center;
+			margin-bottom: 20px;
+		}
+		#noFileError {
+			color: #d93025;
+			font-weight: bold;
+			margin-left: 15px;
+		}
+        #status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: #f0f0f0;
+            border-left: 5px solid #1a73e8;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        #downloadLinkContainer a {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 20px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+        .error {
+            border-left-color: #d93025 !important;
+            color: #d93025;
+        }
+        .warning {
+            border-left-color: #ff9800 !important;
+        }
+        .success {
+             border-left-color: #28a745 !important;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>XLSX 图片链接转图片工具 v2.2</h1>
+    <p><strong>功能说明 (v2.2):</strong></p>
+    <ol>
+        <li>选择格式为 <code>.xlsx</code> 的源文件后，工具会读取第一个工作表的 <strong>B列</strong>。</li>
+		<li>从第2行开始，如果B列单元格内容是图片链接 (http/https)，工具会下载该图片并将其作为浮动图片插入到该单元格的位置。</li>
+		<li>处理完成后，会生成一个可供下载的新文件。<strong>所有操作均在您的浏览器本地化完成</strong>。</li>
+		<li>处理还包括如下操作：</li>
+		<ul>
+			<li><strong>B列</strong>的超链接会转换为纯文本URL再进行处理。</li>
+			<li><strong>B列</strong>的图片链接对应行的尺寸预设为约 <strong>3x3 厘米</strong>。</li>
+			<li>图片会<strong>等比例缩放</strong>后，插入到对应单元格。</li>
+			<li>处理完成后提供包含成功/失败计数的详细报告。</li>
+			<li>生成的文件将自动<strong>冻结首行</strong>。</li>
+			<li>下载文件名将自动包含处理日期和时间。</li>
+		</ul>
+        <li>
+            支持多行并行下载加快处理速度，当前并行处理数量为：
+            <input type="number" id="concurrencyInput" value="1" min="1">。
+            <ul>
+                <li>并行处理数量越小越稳定同时越慢，最小值为1，请酌情调整。</li>
+            </ul>
+        </li>
+    </ol>
+    
+    <p><strong>注意：</strong>如果图片链接本地网络环境无法访问，或图片服务器禁止跨域访问(CORS)，图片可能无法被下载。</p>
+
+    <input type="file" id="fileInput" accept=".xlsx" />
+	<!-- 使用一个容器来包裹按钮和错误提示，以便水平对齐 -->
+    <div>
+		<button id="processButton">开始处理</button>
+		<span id="noFileError"></span>
+	</div>
+    <div id="status" style="display: none;"></div>
+    <div id="downloadLinkContainer"></div>
+
+    <!-- 引入 ExcelJS 库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+
+    <script>
+        // --- 全局变量定义：获取页面上的主要交互元素 ---
+        const fileInput = document.getElementById('fileInput');
+        const processButton = document.getElementById('processButton');
+        const statusDiv = document.getElementById('status');
+        const downloadLinkContainer = document.getElementById('downloadLinkContainer');
+        const concurrencyInput = document.getElementById('concurrencyInput');
+
+        // --- 事件监听器绑定 ---
+        processButton.addEventListener('click', handleFileProcessing);
+
+        fileInput.addEventListener('change', () => {
+            statusDiv.innerHTML = '';
+            statusDiv.style.display = 'none';
+            downloadLinkContainer.innerHTML = '';
+        });
+
+        concurrencyInput.addEventListener('change', () => {
+            const value = parseInt(concurrencyInput.value, 10);
+            if (isNaN(value) || value < 1) {
+                concurrencyInput.value = 1;
+            } else {
+                concurrencyInput.value = value;
+            }
+        });
+
+        function getFormattedDateTime() {
+            const now = new Date();
+            const YYYY = now.getFullYear();
+            const MM = String(now.getMonth() + 1).padStart(2, '0');
+            const DD = String(now.getDate()).padStart(2, '0');
+            const hh = String(now.getHours()).padStart(2, '0');
+            const mm = String(now.getMinutes()).padStart(2, '0');
+            const ss = String(now.getSeconds()).padStart(2, '0');
+            return `${YYYY}${MM}${DD}-${hh}${mm}${ss}`;
+        }
+
+        function getImageData(url) {
+            return new Promise(async (resolve, reject) => {
+                try {
+                    const response = await fetch(url);
+                    if (!response.ok) reject(new Error(`HTTP请求错误! 状态码: ${response.status}`));
+                    const buffer = await response.arrayBuffer();
+
+                    const blob = new Blob([buffer]);
+                    const objectURL = URL.createObjectURL(blob);
+                    const img = new Image();
+                    img.onload = () => {
+                        resolve({
+                            buffer: buffer,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight
+                        });
+                        URL.revokeObjectURL(objectURL);
+                    };
+                    img.onerror = () => {
+                        reject(new Error('无法加载图片以获取其尺寸'));
+                        URL.revokeObjectURL(objectURL);
+                    };
+                    img.src = objectURL;
+
+                } catch (e) {
+                    reject(e);
+                }
+            });
+        }
+
+        async function handleFileProcessing() {
+            if (fileInput.files.length === 0) {
+                const errorTips = document.getElementById('noFileError');
+                errorTips.textContent = '请先选择一个文件！';
+                setTimeout(() => { errorTips.textContent = ''; }, 2000);
+                return;
+            }
+
+            processButton.disabled = true;
+            updateStatus('开始准备处理...', 'info');
+
+            let CONCURRENCY_LIMIT = parseInt(concurrencyInput.value, 10);
+            if (isNaN(CONCURRENCY_LIMIT) || CONCURRENCY_LIMIT < 1) {
+                updateStatus('并行处理数量无效，已重置为默认值 1。', 'warning');
+                CONCURRENCY_LIMIT = 1;
+                concurrencyInput.value = 1;
+            }
+
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+
+            reader.onload = async (e) => {
+                const arrayBuffer = e.target.result;
+                let successCount = 0;
+                let failureCount = 0;
+
+                try {
+                    updateStatus('正在读取和解析XLSX文件...', 'info');
+                    const workbook = new ExcelJS.Workbook();
+                    await workbook.xlsx.load(arrayBuffer);
+                    const worksheet = workbook.getWorksheet(1);
+                    if (!worksheet) throw new Error("文件中找不到任何工作表。");
+                    
+                    worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+                    worksheet.getColumn(2).eachCell((cell, rowNumber) => {
+                        if (rowNumber > 1 && cell.value && typeof cell.value === 'object' && cell.value.hyperlink) {
+                            cell.value = cell.value.hyperlink;
+                        }
+                    });
+
+                    const rowsToProcess = [];
+                    worksheet.getColumn(2).eachCell({ includeEmpty: false }, (cell, rowNumber) => {
+                        if (rowNumber > 1) {
+                            rowsToProcess.push({ row: rowNumber, cell: cell });
+                        }
+                    });
+
+                    if (rowsToProcess.length === 0) {
+                        updateStatus('在B列（第2行及之后）没有找到任何非空单元格。', 'warning');
+                        processButton.disabled = false;
+                        return;
+                    }
+                    
+                    updateStatus('正在调整单元格尺寸...', 'info');
+                    worksheet.getColumn(2).width = 15;
+                    rowsToProcess.forEach(item => {
+                        worksheet.getRow(item.row).height = 85;
+                    });
+
+                    const totalRows = rowsToProcess.length;
+                    let processedCount = 0;
+
+                    updateStatus(`准备处理 ${totalRows} 个链接... (并行数: ${CONCURRENCY_LIMIT})`, 'info');
+
+                    for (let i = 0; i < totalRows; i += CONCURRENCY_LIMIT) {
+                        const batch = rowsToProcess.slice(i, i + CONCURRENCY_LIMIT);
+                        const batchNumber = Math.floor(i / CONCURRENCY_LIMIT) + 1;
+                        const totalBatches = Math.ceil(totalRows / CONCURRENCY_LIMIT);
+
+                        const progressMessage = `[${processedCount}/${totalRows}] 正在处理第 ${batchNumber}/${totalBatches} 批... (成功: ${successCount}, 失败: ${failureCount})`;
+                        updateStatus(progressMessage, 'info');
+
+                        const promisesInBatch = batch.map(item => {
+                            const url = item.cell.value?.toString().trim();
+                            if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+                                return getImageData(url)
+                                    .then(imageData => ({ status: 'fulfilled', data: imageData, item: item }))
+                                    .catch(error => ({ status: 'rejected', reason: error, item: item }));
+                            } else {
+                                return Promise.resolve({ status: 'rejected', reason: new Error('无效的URL格式'), item: item });
+                            }
+                        });
+
+                        const batchResults = await Promise.allSettled(promisesInBatch);
+
+                        for (const result of batchResults) {
+                            if (result.status === 'fulfilled' && result.value.status === 'fulfilled') {
+                                const { data: imageData, item } = result.value;
+                                const imageId = workbook.addImage({ buffer: imageData.buffer, extension: 'png' });
+                                const targetSizeInPixels = 113;
+                                const ratio = Math.min(targetSizeInPixels / imageData.width, targetSizeInPixels / imageData.height);
+                                worksheet.addImage(imageId, {
+                                    tl: { col: 1, row: item.row - 1 },
+                                    ext: { width: imageData.width * ratio, height: imageData.height * ratio }
+                                });
+                                item.cell.value = null;
+                                successCount++;
+                            } else {
+                                failureCount++;
+                                const failedItem = (result.status === 'fulfilled') ? result.value.item : { row: '未知' };
+                                const reason = (result.status === 'fulfilled') ? result.value.reason : result.reason;
+                                console.warn(`跳过第 ${failedItem.row} 行:`, reason);
+                            }
+                        }
+                        processedCount += batch.length;
+                    }
+
+                    updateStatus('所有批次处理完毕，正在生成新的XLSX文件...', 'info');
+                    const newBuffer = await workbook.xlsx.writeBuffer();
+                    const blob = new Blob([newBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                    
+                    const objectURL = URL.createObjectURL(blob);
+                    const originalFileName = file.name.substring(0, file.name.lastIndexOf('.'));
+                    const originalFileExt = file.name.substring(file.name.lastIndexOf('.'));
+                    const newFileName = `${getFormattedDateTime()} ${originalFileName} [已处理]${originalFileExt}`;
+
+                    downloadLinkContainer.innerHTML = `<a href="${objectURL}" download="${newFileName}">下载处理好的文件</a>`;
+                    
+                    const summaryMessage = `处理完成！${successCount}/${totalRows} 图片链接已补全，${failureCount} 个链接无效或处理失败！`;
+                    updateStatus(summaryMessage, 'success');
+
+                } catch (error) {
+                    console.error('处理过程中发生严重错误:', error);
+                    updateStatus(`发生严重错误：\n${error.message}`, 'error');
+                } finally {
+                    processButton.disabled = false;
+                }
+            };
+
+            reader.onerror = () => {
+                 updateStatus(`读取文件失败：\n${reader.error}`, 'error');
+                 processButton.disabled = false;
+            };
+
+            reader.readAsArrayBuffer(file);
+        }
+
+        function updateStatus(message, type) {
+            statusDiv.style.display = 'block';
+            statusDiv.textContent = message;
+            statusDiv.className = type; 
+        }
+    </script>
+
+</body>
+</html>
