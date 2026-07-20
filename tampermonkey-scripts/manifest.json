@@ -1,0 +1,49 @@
+{
+  "generatedAt": "2026-07-20T03:21:30.809Z",
+  "scripts": [
+    {
+      "id": "amazon-signin-blocker",
+      "name": "Amazon Sign-in Blocker",
+      "version": "1.1.0",
+      "description": "拦截亚马逊登录页面：检测到登录相关页面时立即停止加载并显示提示。",
+      "updated": "2026-07-19",
+      "file": "amazon-signin-blocker/amazon-signin-blocker.user.js",
+      "match": [
+        "*://*.amazon.com/*",
+        "*://*.amazon.ca/*",
+        "*://*.amazon.com.mx/*",
+        "*://*.amazon.com.br/*",
+        "*://*.amazon.co.uk/*",
+        "*://*.amazon.de/*",
+        "*://*.amazon.fr/*",
+        "*://*.amazon.it/*",
+        "*://*.amazon.es/*",
+        "*://*.amazon.cn/*",
+        "*://*.amazon.in/*",
+        "*://*.amazon.co.jp/*",
+        "*://*.amazon.com.au/*",
+        "*://*.amazon.nl/*",
+        "*://*.amazon.se/*",
+        "*://*.amazon.pl/*",
+        "*://*.amazon.com.be/*",
+        "*://*.amazon.com.tr/*",
+        "*://*.amazon.ae/*",
+        "*://*.amazon.sa/*",
+        "*://*.amazon.eg/*",
+        "*://*.amazon.sg/*"
+      ]
+    },
+    {
+      "id": "gas-spring-scraper",
+      "name": "气弹簧产品信息抓取",
+      "version": "1.2.1",
+      "description": "自动抓取气弹簧产品页面的5类信息，在新标签页展示并支持一键复制",
+      "updated": "2026-07-19",
+      "file": "gas-spring-scraper/gas-spring-scraper.user.js",
+      "match": [
+        "https://www.liftsupportsdepot.com/*",
+        "https://webcache.yiparts.com/*"
+      ]
+    }
+  ]
+}
