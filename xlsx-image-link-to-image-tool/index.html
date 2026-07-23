@@ -2,124 +2,133 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>XLSX 图片链接转图片工具 v2.2丨Design by Edwin Z & Powered by Gemini 2.5 Pro</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XLSX 图片链接转图片工具 · AIOZ 万事屋</title>
     <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            line-height: 1.6;
+            background-color: #f0f2f5;
             color: #333;
-            max-width: 800px;
-            margin: 40px auto;
-            padding: 0 20px;
+            line-height: 1.6;
+            min-height: 100vh;
         }
-        h1 {
-            color: #1a73e8;
+        .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+        .breadcrumb { font-size: .9em; margin-bottom: 16px; }
+        .breadcrumb a { color: #1a73e8; text-decoration: none; }
+        .breadcrumb a:hover { text-decoration: underline; }
+        header h1 { font-size: 1.8em; font-weight: 600; color: #1a73e8; }
+        header p { margin-top: 6px; color: #666; }
+
+        .panel {
+            margin-top: 24px; background: #fff; border: 1px solid #e3e6ea;
+            border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,.05);
         }
+        .desc { font-size: .92em; color: #444; }
+        .desc > p { margin-bottom: 8px; }
+        .desc ol { margin: 0 0 8px 20px; }
+        .desc ul { margin: 4px 0 4px 18px; }
+        .desc li { margin: 4px 0; }
+        .desc code {
+            background: #f0f2f5; border-radius: 4px; padding: 1px 5px; font-size: .92em;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .note {
+            margin-top: 14px; background: #fff8e1; border: 1px solid #ffe0a3;
+            border-radius: 8px; padding: 10px 14px; font-size: .88em; color: #8a6d00; line-height: 1.5;
+        }
+
+        .controls { margin-top: 22px; border-top: 1px solid #eef0f3; padding-top: 22px; }
         input[type="file"] {
-            display: block;
-            margin-bottom: 20px;
-            padding: 10px;
-            border-radius: 5px;
-            border: 1px solid #ccc;
+            display: block; width: 100%; margin-bottom: 16px; padding: 10px;
+            border-radius: 8px; border: 1px solid #d5d9e0; background: #fafbfc; font-family: inherit;
         }
+        .concurrency-row { display: flex; align-items: center; gap: 8px; font-size: .9em; color: #444; margin-bottom: 16px; flex-wrap: wrap; }
         input[type="number"] {
-            width: 60px;
-            padding: 5px;
-            text-align: center;
-            border-radius: 5px;
-            border: 1px solid #ccc;
-            font-size: 0.95em;
+            width: 64px; padding: 6px; text-align: center; border-radius: 7px;
+            border: 1px solid #d5d9e0; font-size: .95em; font-family: inherit;
         }
+        input:focus { outline: none; border-color: #1a73e8; }
+
+        .button-container { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
         button {
-            background-color: #1a73e8;
-            color: white;
-            border: none;
-            cursor: pointer;
-            font-size: 1em;
-			padding: 10px;
-			border-radius: 5px;
+            background-color: #1a73e8; color: #fff; border: none; cursor: pointer;
+            font-size: .95em; font-family: inherit; padding: 10px 22px; border-radius: 8px; transition: opacity .15s;
         }
-        button:disabled {
-            background-color: #a0c3ff;
-            cursor: not-allowed;
-        }
-		.button-container {
-			display: flex;
-			align-items: center;
-			margin-bottom: 20px;
-		}
-		#noFileError {
-			color: #d93025;
-			font-weight: bold;
-			margin-left: 15px;
-		}
+        button:hover { opacity: .9; }
+        button:disabled { background-color: #a0c3ff; cursor: not-allowed; opacity: 1; }
+        #noFileError { color: #d93025; font-weight: 600; font-size: .9em; }
+
         #status {
-            margin-top: 20px;
-            padding: 15px;
-            border-radius: 5px;
-            background-color: #f0f0f0;
-            border-left: 5px solid #1a73e8;
-            white-space: pre-wrap;
-            word-wrap: break-word;
+            margin-top: 20px; padding: 15px; border-radius: 8px;
+            background-color: #f5f6f8; border-left: 4px solid #1a73e8;
+            white-space: pre-wrap; word-wrap: break-word; font-size: .9em;
         }
+        #status.error { border-left-color: #d93025; color: #d93025; }
+        #status.warning { border-left-color: #ff9800; }
+        #status.success { border-left-color: #28a745; }
         #downloadLinkContainer a {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 12px 20px;
-            background-color: #28a745;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: bold;
+            display: inline-block; margin-top: 20px; padding: 11px 22px;
+            background-color: #28a745; color: #fff; text-decoration: none; border-radius: 8px; font-weight: 600;
         }
-        .error {
-            border-left-color: #d93025 !important;
-            color: #d93025;
-        }
-        .warning {
-            border-left-color: #ff9800 !important;
-        }
-        .success {
-             border-left-color: #28a745 !important;
-        }
+        #downloadLinkContainer a:hover { opacity: .9; }
+
+        footer { margin-top: 40px; text-align: center; font-size: .85em; color: #999; line-height: 1.9; }
+        footer a { color: #999; }
+        footer a:hover { color: #1a73e8; }
     </style>
 </head>
 <body>
+    <div class="container">
+        <div class="breadcrumb"><a href="/">← 返回 AIOZ 万事屋</a></div>
+        <header>
+            <h1>XLSX 图片链接转图片工具</h1>
+            <p>读取 Excel 表格 B 列的图片链接，下载后作为图片插入对应单元格，在本地生成新文件</p>
+        </header>
 
-    <h1>XLSX 图片链接转图片工具 v2.2</h1>
-    <p><strong>功能说明 (v2.2):</strong></p>
-    <ol>
-        <li>选择格式为 <code>.xlsx</code> 的源文件后，工具会读取第一个工作表的 <strong>B列</strong>。</li>
-		<li>从第2行开始，如果B列单元格内容是图片链接 (http/https)，工具会下载该图片并将其作为浮动图片插入到该单元格的位置。</li>
-		<li>处理完成后，会生成一个可供下载的新文件。<strong>所有操作均在您的浏览器本地化完成</strong>。</li>
-		<li>处理还包括如下操作：</li>
-		<ul>
-			<li><strong>B列</strong>的超链接会转换为纯文本URL再进行处理。</li>
-			<li><strong>B列</strong>的图片链接对应行的尺寸预设为约 <strong>3x3 厘米</strong>。</li>
-			<li>图片会<strong>等比例缩放</strong>后，插入到对应单元格。</li>
-			<li>处理完成后提供包含成功/失败计数的详细报告。</li>
-			<li>生成的文件将自动<strong>冻结首行</strong>。</li>
-			<li>下载文件名将自动包含处理日期和时间。</li>
-		</ul>
-        <li>
-            支持多行并行下载加快处理速度，当前并行处理数量为：
-            <input type="number" id="concurrencyInput" value="1" min="1">。
-            <ul>
-                <li>并行处理数量越小越稳定同时越慢，最小值为1，请酌情调整。</li>
-            </ul>
-        </li>
-    </ol>
-    
-    <p><strong>注意：</strong>如果图片链接本地网络环境无法访问，或图片服务器禁止跨域访问(CORS)，图片可能无法被下载。</p>
+        <section class="panel">
+            <div class="desc">
+                <p><strong>功能说明（v2.2）：</strong></p>
+                <ol>
+                    <li>选择格式为 <code>.xlsx</code> 的源文件后，工具会读取第一个工作表的 <strong>B列</strong>。</li>
+                    <li>从第2行开始，如果B列单元格内容是图片链接 (http/https)，工具会下载该图片并将其作为浮动图片插入到该单元格的位置。</li>
+                    <li>处理完成后，会生成一个可供下载的新文件。<strong>XLSX 的读取与写入均在您的浏览器本地完成</strong>（图片需从其链接所在服务器下载，故需联网）。</li>
+                    <li>处理还包括如下操作：
+                        <ul>
+                            <li><strong>B列</strong>的超链接会转换为纯文本URL再进行处理。</li>
+                            <li><strong>B列</strong>的图片链接对应行的尺寸预设为约 <strong>3x3 厘米</strong>。</li>
+                            <li>图片会<strong>等比例缩放</strong>后，插入到对应单元格。</li>
+                            <li>处理完成后提供包含成功/失败计数的详细报告。</li>
+                            <li>生成的文件将自动<strong>冻结首行</strong>。</li>
+                            <li>下载文件名将自动包含处理日期和时间。</li>
+                        </ul>
+                    </li>
+                    <li>支持多行并行下载加快处理速度，当前并行处理数量可在下方调整（越小越稳定但越慢，最小值为 1）。</li>
+                </ol>
+                <div class="note">注意：如果图片链接本地网络环境无法访问，或图片服务器禁止跨域访问 (CORS)，图片可能无法被下载。</div>
+            </div>
 
-    <input type="file" id="fileInput" accept=".xlsx" />
-	<!-- 使用一个容器来包裹按钮和错误提示，以便水平对齐 -->
-    <div>
-		<button id="processButton">开始处理</button>
-		<span id="noFileError"></span>
-	</div>
-    <div id="status" style="display: none;"></div>
-    <div id="downloadLinkContainer"></div>
+            <div class="controls">
+                <input type="file" id="fileInput" accept=".xlsx" />
+                <div class="concurrency-row">
+                    <label for="concurrencyInput">并行处理数量：</label>
+                    <input type="number" id="concurrencyInput" value="1" min="1">
+                </div>
+                <div class="button-container">
+                    <button id="processButton">开始处理</button>
+                    <span id="noFileError"></span>
+                </div>
+                <div id="status" style="display: none;"></div>
+                <div id="downloadLinkContainer"></div>
+            </div>
+        </section>
+
+        <footer>
+            <p><a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a></p>
+            <p>© 2026 AIOZ 万事屋 · 保留所有权利</p>
+            <p>Designed by 26eg丨Powered by Gemini 2.5 Pro</p>
+        </footer>
+    </div>
 
     <!-- 引入 ExcelJS 库 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
@@ -223,7 +232,7 @@
                     await workbook.xlsx.load(arrayBuffer);
                     const worksheet = workbook.getWorksheet(1);
                     if (!worksheet) throw new Error("文件中找不到任何工作表。");
-                    
+
                     worksheet.views = [{ state: 'frozen', ySplit: 1 }];
                     worksheet.getColumn(2).eachCell((cell, rowNumber) => {
                         if (rowNumber > 1 && cell.value && typeof cell.value === 'object' && cell.value.hyperlink) {
@@ -243,7 +252,7 @@
                         processButton.disabled = false;
                         return;
                     }
-                    
+
                     updateStatus('正在调整单元格尺寸...', 'info');
                     worksheet.getColumn(2).width = 15;
                     rowsToProcess.forEach(item => {
@@ -301,14 +310,14 @@
                     updateStatus('所有批次处理完毕，正在生成新的XLSX文件...', 'info');
                     const newBuffer = await workbook.xlsx.writeBuffer();
                     const blob = new Blob([newBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-                    
+
                     const objectURL = URL.createObjectURL(blob);
                     const originalFileName = file.name.substring(0, file.name.lastIndexOf('.'));
                     const originalFileExt = file.name.substring(file.name.lastIndexOf('.'));
                     const newFileName = `${getFormattedDateTime()} ${originalFileName} [已处理]${originalFileExt}`;
 
                     downloadLinkContainer.innerHTML = `<a href="${objectURL}" download="${newFileName}">下载处理好的文件</a>`;
-                    
+
                     const summaryMessage = `处理完成！${successCount}/${totalRows} 图片链接已补全，${failureCount} 个链接无效或处理失败！`;
                     updateStatus(summaryMessage, 'success');
 
@@ -331,7 +340,7 @@
         function updateStatus(message, type) {
             statusDiv.style.display = 'block';
             statusDiv.textContent = message;
-            statusDiv.className = type; 
+            statusDiv.className = type;
         }
     </script>
 
