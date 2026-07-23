@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-20T03:21:30.809Z",
+  "generatedAt": "2026-07-23T03:11:02.221Z",
   "scripts": [
     {
       "id": "amazon-signin-blocker",
@@ -36,9 +36,9 @@
     {
       "id": "gas-spring-scraper",
       "name": "气弹簧产品信息抓取",
-      "version": "1.2.1",
+      "version": "1.2.2",
       "description": "自动抓取气弹簧产品页面的5类信息，在新标签页展示并支持一键复制",
-      "updated": "2026-07-19",
+      "updated": "2026-07-22",
       "file": "gas-spring-scraper/gas-spring-scraper.user.js",
       "match": [
         "https://www.liftsupportsdepot.com/*",
