@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         气弹簧产品信息抓取
 // @namespace    https://github.com/26eg/tools.aioz.cc
-// @version      1.2.1
+// @version      1.2.2
 // @description  自动抓取气弹簧产品页面的5类信息，在新标签页展示并支持一键复制
 // @author       26eg
 // @homepageURL  https://tools.aioz.cc/tampermonkey-scripts/
@@ -88,96 +88,92 @@
     },
 
     fetchData: function (url, cb) {
+      // 脚本在 document-idle 时已运行于产品页本身，页面 HTML 由服务端完整渲染，
+      // 所需字段（ul.technical-information 等）都已存在于当前 DOM 中。
+      // 因此直接读取当前 document，不再对同一 URL 发第二次网络请求。
+      //
+      // 旧版通过 GM_xmlhttpRequest 重新抓取同一页面，站点接入 Cloudflare 机器人
+      // 防护后，该同源重复请求被拦截返回 HTTP 403，导致"抓取失败"。改读 DOM
+      // 可彻底规避，同时更快。（跨域的适配车型 API 仍需网络请求，见下方。）
+      var doc = document;
+
+      // ── 专业网站参数 ──
+      var techInfoEl = doc.querySelector('ul.technical-information');
+      var techInfoHTML = '';
+      if (techInfoEl) {
+        var clone = techInfoEl.cloneNode(true);
+        clone.querySelectorAll('[style]').forEach(function (el) { el.removeAttribute('style'); });
+
+        // 按自定义顺序重排 <li>：优先字段前置，缺失字段插入空占位
+        reorderTechInfoLi(clone, [
+          'SKU:',
+          'Custom Qty:',
+          'Extended Length A [in]:',
+          'Compressed Length B [in]:',
+          'Stroke C [in]:',
+          'Force (Lbs):',
+          'Force Newtons:',
+          'Body Connection:',
+          'Shaft Connection:',
+          'End Fitting Size:',
+          'End Fitting Type:',
+          'Cylinder Diameter (MM):',
+          'Rod Diameter (MM):',
+          'Vehicle Location:',
+          'A Interchanges:'
+        ]);
+
+        techInfoHTML = clone.outerHTML;
+      }
+
+      // ── 零件编号 ──
+      var partNumbers = '';
+      if (techInfoEl) {
+        var interEl = techInfoEl.querySelector('.a-interchanges span');
+        if (interEl) partNumbers = interEl.textContent.trim();
+      }
+
+      // ── 适配位置 ──
+      var vehicleLocation = '';
+      var locEl = doc.querySelector('li.vehicle-location span');
+      if (locEl) vehicleLocation = locEl.textContent.trim();
+
+      // ── productId ──
+      var productId = '';
+      var ogImage = doc.querySelector('meta[property="og:image"]');
+      if (ogImage && ogImage.getAttribute('content')) {
+        var m = ogImage.getAttribute('content').match(/\/products\/(\d+)\//);
+        if (m) productId = m[1];
+      }
+      if (!productId) {
+        var pidInput = doc.querySelector('input[name="product_id"]');
+        if (pidInput) productId = pidInput.value;
+      }
+
+      var result = {
+        techInfoHTML: techInfoHTML,
+        partNumbers: partNumbers,
+        fitment: '',
+        location: vehicleLocation,
+        link: url
+      };
+
+      if (!productId) { cb(null, result, null); return; }
+
+      // ── 适配车型 API（跨域到 myconvermax，仍需网络请求；失败不影响主流程）──
       GM_xmlhttpRequest({
         method: 'GET',
-        url: url,
-        headers: { 'Accept': 'text/html', 'User-Agent': navigator.userAgent },
-        onload: function (resp) {
-          if (resp.status < 200 || resp.status >= 300) { cb('HTTP ' + resp.status); return; }
-
-          var parser = new DOMParser();
-          var doc = parser.parseFromString(resp.responseText, 'text/html');
-
-          // ── 专业网站参数 ──
-          var techInfoEl = doc.querySelector('ul.technical-information');
-          var techInfoHTML = '';
-          if (techInfoEl) {
-            var clone = techInfoEl.cloneNode(true);
-            clone.querySelectorAll('[style]').forEach(function (el) { el.removeAttribute('style'); });
-
-            // 按自定义顺序重排 <li>：优先字段前置，缺失字段插入空占位
-            reorderTechInfoLi(clone, [
-              'SKU:',
-              'Custom Qty:',
-              'Extended Length A [in]:',
-              'Compressed Length B [in]:',
-              'Stroke C [in]:',
-              'Force (Lbs):',
-              'Force Newtons:',
-              'Body Connection:',
-              'Shaft Connection:',
-              'End Fitting Size:',
-              'End Fitting Type:',
-              'Cylinder Diameter (MM):',
-              'Rod Diameter (MM):',
-              'Vehicle Location:',
-              'A Interchanges:'
-            ]);
-
-            techInfoHTML = clone.outerHTML;
+        url: 'https://liftsupportsdepot.myconvermax.com/ymm/fitments.json?productId=' + productId,
+        headers: { 'Accept': 'application/json' },
+        onload: function (resp2) {
+          var fitmentJSON = null;
+          if (resp2.status >= 200 && resp2.status < 300) {
+            try { fitmentJSON = JSON.parse(resp2.responseText); } catch (e) {}
           }
-
-          // ── 零件编号 ──
-          var partNumbers = '';
-          if (techInfoEl) {
-            var interEl = techInfoEl.querySelector('.a-interchanges span');
-            if (interEl) partNumbers = interEl.textContent.trim();
-          }
-
-          // ── 适配位置 ──
-          var vehicleLocation = '';
-          var locEl = doc.querySelector('li.vehicle-location span');
-          if (locEl) vehicleLocation = locEl.textContent.trim();
-
-          // ── productId ──
-          var productId = '';
-          var ogImage = doc.querySelector('meta[property="og:image"]');
-          if (ogImage && ogImage.getAttribute('content')) {
-            var m = ogImage.getAttribute('content').match(/\/products\/(\d+)\//);
-            if (m) productId = m[1];
-          }
-          if (!productId) {
-            var pidInput = doc.querySelector('input[name="product_id"]');
-            if (pidInput) productId = pidInput.value;
-          }
-
-          var result = {
-            techInfoHTML: techInfoHTML,
-            partNumbers: partNumbers,
-            fitment: '',
-            location: vehicleLocation,
-            link: url
-          };
-
-          if (!productId) { cb(null, result, null); return; }
-
-          // ── 适配车型 API ──
-          GM_xmlhttpRequest({
-            method: 'GET',
-            url: 'https://liftsupportsdepot.myconvermax.com/ymm/fitments.json?productId=' + productId,
-            headers: { 'Accept': 'application/json' },
-            onload: function (resp2) {
-              var fitmentJSON = null;
-              if (resp2.status >= 200 && resp2.status < 300) {
-                try { fitmentJSON = JSON.parse(resp2.responseText); } catch (e) {}
-              }
-              if (fitmentJSON) result.fitment = buildFitmentText(fitmentJSON);
-              cb(null, result, fitmentJSON);
-            },
-            onerror: function () { cb(null, result, null); }
-          });
+          if (fitmentJSON) result.fitment = buildFitmentText(fitmentJSON);
+          cb(null, result, fitmentJSON);
         },
-        onerror: function () { cb('网络请求失败'); }
+        onerror: function () { cb(null, result, null); }
       });
     }
   });
