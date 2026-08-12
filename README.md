@@ -7,6 +7,7 @@
 | 路径 | 说明 |
 |---|---|
 | `index.html` | 总导航页，列出所有工具 |
+| `xlsx-workbook-merger/` | XLSX 工作簿批量合并工具（按表头对齐、纯前端本地处理） |
 | `xlsx-image-link-to-image-tool/` | XLSX 图片链接转图片工具（纯前端，本地处理） |
 | `tampermonkey-scripts/` | 篡改猴（Tampermonkey）用户脚本合集及其导航页 |
 | `scripts/build-manifest.mjs` | 构建脚本：扫描 `*.user.js` 元数据生成 `manifest.json` |

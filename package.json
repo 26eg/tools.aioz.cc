@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build-manifest.mjs"
+    "build": "node scripts/build-manifest.mjs",
+    "test": "node scripts/test-xlsx-workbook-merger.mjs"
   }
 }

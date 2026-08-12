@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XLSX 工作簿批量合并 · AIOZ 万事屋</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --blue: #1a73e8;
+      --blue-soft: #e8f0fe;
+      --green: #1e7a3d;
+      --green-soft: #e6f4ea;
+      --red: #d93025;
+      --amber: #9a6500;
+      --border: #e3e6ea;
+      --muted: #667085;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f0f2f5;
+      color: #30343b;
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    button, input { font: inherit; }
+    .container { max-width: 920px; margin: 0 auto; padding: 40px 20px; }
+    .breadcrumb { font-size: .9rem; margin-bottom: 16px; }
+    .breadcrumb a { color: var(--blue); text-decoration: none; }
+    .breadcrumb a:hover { text-decoration: underline; }
+    header h1 { color: var(--blue); font-size: 1.8rem; font-weight: 650; }
+    header p { color: #666; margin-top: 6px; }
+
+    .privacy {
+      align-items: flex-start; background: var(--green-soft); border: 1px solid #b7e0c4;
+      border-radius: 10px; color: var(--green); display: flex; font-size: .9rem;
+      gap: 10px; margin-top: 20px; padding: 12px 16px;
+    }
+    .privacy .lock { font-size: 1.2rem; line-height: 1.35; }
+    .panel {
+      background: #fff; border: 1px solid var(--border); border-radius: 12px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .05); margin-top: 24px; padding: 24px;
+    }
+    .panel h2 { font-size: 1.08rem; font-weight: 650; }
+    .steps { color: #4b5563; font-size: .91rem; margin: 12px 0 0 20px; }
+    .steps li + li { margin-top: 5px; }
+    code {
+      background: #f2f4f7; border-radius: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .88em; padding: 2px 5px;
+    }
+    .compatibility {
+      background: #fff8e1; border: 1px solid #ffe0a3; border-radius: 8px; color: #755200;
+      font-size: .86rem; margin-top: 16px; padding: 10px 13px;
+    }
+
+    .dropzone {
+      background: #fafbfc; border: 2px dashed #bdc7d5; border-radius: 12px; color: #687386;
+      cursor: pointer; display: block; margin-top: 18px; padding: 30px 18px; text-align: center;
+      transition: border-color .15s, background .15s, color .15s; width: 100%;
+    }
+    .dropzone:hover, .dropzone:focus-visible, .dropzone.dragover {
+      background: #f5f9ff; border-color: var(--blue); color: var(--blue); outline: none;
+    }
+    .dropzone .icon { display: block; font-size: 2rem; }
+    .dropzone .main { display: block; font-weight: 650; margin-top: 6px; }
+    .dropzone .sub { display: block; font-size: .84rem; margin-top: 4px; }
+
+    .selected { margin-top: 20px; }
+    .selected-head { align-items: baseline; display: flex; gap: 12px; justify-content: space-between; }
+    .selected-head p { color: var(--muted); font-size: .84rem; }
+    .file-list { list-style: none; margin-top: 10px; }
+    .file-item {
+      align-items: center; border-top: 1px solid #edf0f3; display: grid;
+      gap: 10px; grid-template-columns: 30px minmax(0, 1fr) auto; padding: 11px 2px;
+    }
+    .file-index {
+      align-items: center; background: #eef2f7; border-radius: 50%; color: #5b6575;
+      display: inline-flex; font-size: .78rem; font-weight: 700; height: 26px; justify-content: center; width: 26px;
+    }
+    .file-name { font-size: .9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-meta { color: #8a93a3; font-size: .78rem; }
+    .base-badge {
+      background: var(--blue-soft); border-radius: 5px; color: var(--blue); display: inline-block;
+      font-size: .72rem; font-weight: 700; margin-left: 7px; padding: 1px 5px; vertical-align: 1px;
+    }
+    .file-actions { display: flex; gap: 5px; }
+    .icon-btn {
+      background: #f3f5f7; border: 0; border-radius: 6px; color: #596273; cursor: pointer;
+      font-size: .78rem; min-height: 30px; padding: 5px 8px;
+    }
+    .icon-btn:hover { background: #e8edf3; }
+    .icon-btn:disabled { cursor: default; opacity: .38; }
+
+    .action-row { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+    .btn {
+      align-items: center; border: 0; border-radius: 8px; cursor: pointer; display: inline-flex;
+      font-size: .92rem; font-weight: 650; justify-content: center; padding: 10px 20px; text-decoration: none;
+    }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-success { background: #248a46; color: #fff; }
+    .btn:hover { opacity: .9; }
+    .btn:disabled { cursor: default; opacity: .45; }
+    .form-error { color: var(--red); font-size: .86rem; font-weight: 600; }
+
+    .progress-track { background: #edf1f5; border-radius: 999px; height: 8px; margin-top: 16px; overflow: hidden; }
+    .progress-bar { background: var(--blue); height: 100%; transition: width .2s ease; width: 0; }
+    .status { border-left: 4px solid var(--blue); border-radius: 7px; margin-top: 14px; padding: 10px 13px; }
+    .status strong { display: block; font-size: .92rem; }
+    .status span { color: #667085; display: block; font-size: .84rem; margin-top: 2px; white-space: pre-wrap; }
+    .status.error { background: #fff4f3; border-left-color: var(--red); }
+    .status.error strong, .status.error span { color: var(--red); }
+    .status.success { background: var(--green-soft); border-left-color: #248a46; }
+    .status.success strong { color: var(--green); }
+
+    .result-summary { color: #475467; font-size: .9rem; margin-top: 7px; }
+    .report-wrap { border: 1px solid #e7eaee; border-radius: 8px; margin-top: 16px; overflow-x: auto; }
+    table { border-collapse: collapse; font-size: .82rem; min-width: 710px; width: 100%; }
+    th { background: #f6f8fa; color: #535d6c; font-weight: 650; text-align: left; }
+    th, td { border-bottom: 1px solid #edf0f3; padding: 9px 10px; vertical-align: top; }
+    tbody tr:last-child td { border-bottom: 0; }
+    td:first-child { color: #7a8494; text-align: center; width: 38px; }
+    td:nth-child(2) { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .result-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+    .result-note { color: #7a8494; font-size: .82rem; }
+    .hidden { display: none !important; }
+
+    footer { color: #999; font-size: .85rem; line-height: 1.9; margin-top: 40px; text-align: center; }
+    footer a { color: #999; }
+    footer a:hover { color: var(--blue); }
+    @media (max-width: 640px) {
+      .container { padding: 28px 14px; }
+      .panel { padding: 19px 16px; }
+      .file-item { grid-template-columns: 28px minmax(0, 1fr); }
+      .file-actions { grid-column: 2; }
+      .selected-head { align-items: flex-start; flex-direction: column; gap: 2px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="breadcrumb"><a href="/">← 返回 AIOZ 万事屋</a></div>
+    <header>
+      <h1>XLSX 工作簿批量合并</h1>
+      <p>自动识别表头、对齐字段，把多个工作簿的第一个工作表合并为一张表</p>
+    </header>
+
+    <div class="privacy">
+      <span class="lock" aria-hidden="true">🔒</span>
+      <span>文件只在你的<b>浏览器内存</b>中读取与合并。页面没有文件上传接口，服务器不会接收或存储所选工作簿；刷新页面后本地处理数据即被释放。</span>
+    </div>
+
+    <section class="panel" aria-labelledby="instructionsTitle">
+      <h2 id="instructionsTitle">合并规则</h2>
+      <ol class="steps">
+        <li>一次选择至少 2 个 <code>.xlsx</code> 文件；列表第 1 项作为基准文件，可用“上移 / 下移”调整顺序。</li>
+        <li>每个工作簿只处理第 1 个工作表；工具会在前 50 行识别表头，并按字段名称自动对齐列。</li>
+        <li>输出仅保留 1 个工作表、1 行表头；数据不去重，单元格样式、超链接、行高、列宽和常见合并区域会尽量原样保留。</li>
+        <li>输出文件名为 <code>时间戳_第一个文件名.xlsx</code>。</li>
+      </ol>
+      <div class="compatibility">为避免静默丢失内容，若有效工作表包含无法可靠按行迁移的图片、表格对象或条件格式，工具会停止并明确提示。当前样例不含这些对象。</div>
+
+      <button class="dropzone" id="dropzone" type="button">
+        <span class="icon" aria-hidden="true">📚</span>
+        <span class="main">点击选择多个 XLSX，或拖拽到这里</span>
+        <span class="sub">文件不会离开当前浏览器 · 支持调整合并顺序</span>
+      </button>
+      <input id="fileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
+
+      <div class="selected hidden" id="selectedPanel">
+        <div class="selected-head">
+          <h2>待合并文件</h2>
+          <p id="fileSummary"></p>
+        </div>
+        <ol class="file-list" id="fileList"></ol>
+      </div>
+
+      <div class="action-row">
+        <button class="btn btn-primary" id="mergeButton" type="button" disabled>开始合并</button>
+        <span class="form-error" id="formError" role="alert"></span>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="progressPanel" aria-live="polite">
+      <h2>处理进度</h2>
+      <div class="progress-track" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
+      <div class="status" id="statusBox">
+        <strong id="statusTitle">准备处理…</strong>
+        <span id="statusDetail"></span>
+      </div>
+    </section>
+
+    <section class="panel hidden" id="resultPanel" aria-labelledby="resultTitle">
+      <h2 id="resultTitle">合并结果</h2>
+      <p class="result-summary" id="resultSummary"></p>
+      <div class="report-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>文件名</th><th>读取工作表</th><th>表头行</th><th>数据行</th><th>字段对齐</th></tr>
+          </thead>
+          <tbody id="reportBody"></tbody>
+        </table>
+      </div>
+      <div class="result-actions">
+        <a class="btn btn-success" id="downloadLink" href="#" download>下载合并后的工作簿</a>
+        <span class="result-note" id="resultNote"></span>
+      </div>
+    </section>
+
+    <footer>
+      <p><a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a></p>
+      <p>© 2026 AIOZ 万事屋 · 保留所有权利</p>
+      <p>Designed by 26eg丨Powered by Claude</p>
+    </footer>
+  </main>
+
+  <!-- ExcelJS 4.3.0 (MIT) 固定为同源资源；文件处理不依赖第三方网络请求。 -->
+  <script src="./vendor/exceljs.min.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
