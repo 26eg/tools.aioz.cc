@@ -4,6 +4,39 @@ export const MAX_HEADER_SCAN_ROWS = 50;
 export const MAX_SUPPORTED_COLUMNS = 1024;
 export const MIN_HEADER_SIMILARITY = 0.5;
 
+export function isXlsxFilename(filename) {
+  return typeof filename === 'string' && /\.xlsx$/i.test(filename.trim());
+}
+
+export function fileIdentity(file) {
+  return `${file?.name ?? ''}\u0000${file?.size ?? ''}\u0000${file?.lastModified ?? ''}`;
+}
+
+export function appendUniqueXlsxFiles(existingFiles = [], incomingFiles = []) {
+  const files = [...existingFiles];
+  const seen = new Set(files.map(fileIdentity));
+  let addedCount = 0;
+  let duplicateCount = 0;
+  let invalidCount = 0;
+
+  for (const file of incomingFiles) {
+    if (!file || !isXlsxFilename(file.name)) {
+      invalidCount += 1;
+      continue;
+    }
+    const key = fileIdentity(file);
+    if (seen.has(key)) {
+      duplicateCount += 1;
+      continue;
+    }
+    seen.add(key);
+    files.push(file);
+    addedCount += 1;
+  }
+
+  return { files, addedCount, duplicateCount, invalidCount };
+}
+
 export function headerValueToText(value) {
   if (value === null || value === undefined) return '';
   if (value instanceof Date) return value.toISOString();

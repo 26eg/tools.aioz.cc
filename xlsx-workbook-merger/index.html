@@ -21,64 +21,83 @@
       background: #f0f2f5;
       color: #30343b;
       min-height: 100vh;
-      line-height: 1.6;
+      line-height: 1.5;
     }
     button, input { font: inherit; }
-    .container { max-width: 920px; margin: 0 auto; padding: 40px 20px; }
-    .breadcrumb { font-size: .9rem; margin-bottom: 16px; }
+    .container { max-width: 1180px; margin: 0 auto; padding: 24px 22px 18px; }
+    .breadcrumb { font-size: .86rem; margin-bottom: 8px; }
     .breadcrumb a { color: var(--blue); text-decoration: none; }
     .breadcrumb a:hover { text-decoration: underline; }
-    header h1 { color: var(--blue); font-size: 1.8rem; font-weight: 650; }
-    header p { color: #666; margin-top: 6px; }
+    header h1 { color: var(--blue); font-size: 1.72rem; font-weight: 680; line-height: 1.25; }
+    header p { color: #667085; font-size: .94rem; margin-top: 4px; }
 
     .privacy {
-      align-items: flex-start; background: var(--green-soft); border: 1px solid #b7e0c4;
-      border-radius: 10px; color: var(--green); display: flex; font-size: .9rem;
-      gap: 10px; margin-top: 20px; padding: 12px 16px;
+      align-items: center; background: var(--green-soft); border: 1px solid #b7e0c4;
+      border-radius: 9px; color: var(--green); display: flex; font-size: .86rem;
+      gap: 9px; margin-top: 13px; padding: 9px 13px;
     }
-    .privacy .lock { font-size: 1.2rem; line-height: 1.35; }
+    .privacy .lock { font-size: 1.08rem; line-height: 1; }
+    .workspace-grid {
+      align-items: start; display: grid; gap: 18px; grid-template-columns: 340px minmax(0, 1fr); margin-top: 18px;
+    }
     .panel {
       background: #fff; border: 1px solid var(--border); border-radius: 12px;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, .05); margin-top: 24px; padding: 24px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .05); padding: 20px;
     }
-    .panel h2 { font-size: 1.08rem; font-weight: 650; }
-    .steps { color: #4b5563; font-size: .91rem; margin: 12px 0 0 20px; }
-    .steps li + li { margin-top: 5px; }
+    .panel h2 { font-size: 1.03rem; font-weight: 680; }
+    .guide-panel { position: sticky; top: 18px; }
+    .steps { color: #4b5563; font-size: .86rem; margin: 11px 0 0 19px; }
+    .steps li + li { margin-top: 6px; }
     code {
       background: #f2f4f7; border-radius: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: .88em; padding: 2px 5px;
     }
     .compatibility {
       background: #fff8e1; border: 1px solid #ffe0a3; border-radius: 8px; color: #755200;
-      font-size: .86rem; margin-top: 16px; padding: 10px 13px;
+      font-size: .8rem; margin-top: 14px; padding: 9px 11px;
+    }
+    .merge-head { align-items: flex-start; display: flex; gap: 14px; justify-content: space-between; }
+    .merge-head p { color: var(--muted); font-size: .82rem; margin-top: 3px; }
+    .local-badge {
+      background: var(--green-soft); border-radius: 999px; color: var(--green); flex: 0 0 auto;
+      font-size: .75rem; font-weight: 700; padding: 4px 9px;
     }
 
     .dropzone {
       background: #fafbfc; border: 2px dashed #bdc7d5; border-radius: 12px; color: #687386;
-      cursor: pointer; display: block; margin-top: 18px; padding: 30px 18px; text-align: center;
+      cursor: pointer; display: block; margin-top: 14px; overflow: hidden; padding: 20px 16px; position: relative; text-align: center;
       transition: border-color .15s, background .15s, color .15s; width: 100%;
     }
-    .dropzone:hover, .dropzone:focus-visible, .dropzone.dragover {
+    .dropzone:hover, .dropzone:focus-within, .dropzone.dragover {
       background: #f5f9ff; border-color: var(--blue); color: var(--blue); outline: none;
     }
-    .dropzone .icon { display: block; font-size: 2rem; }
-    .dropzone .main { display: block; font-weight: 650; margin-top: 6px; }
-    .dropzone .sub { display: block; font-size: .84rem; margin-top: 4px; }
+    .dropzone.disabled { cursor: wait; opacity: .62; }
+    .file-input {
+      cursor: pointer; height: 100%; inset: 0; opacity: 0; position: absolute; width: 100%; z-index: 2;
+    }
+    .file-input:disabled { cursor: wait; }
+    .dropzone .icon { display: block; font-size: 1.7rem; line-height: 1.1; }
+    .dropzone .main { display: block; font-size: .95rem; font-weight: 680; margin-top: 5px; }
+    .dropzone .sub { display: block; font-size: .8rem; margin-top: 3px; }
 
-    .selected { margin-top: 20px; }
+    .selected { margin-top: 14px; }
     .selected-head { align-items: baseline; display: flex; gap: 12px; justify-content: space-between; }
+    .selected-head h3 { font-size: .94rem; font-weight: 680; }
     .selected-head p { color: var(--muted); font-size: .84rem; }
-    .file-list { list-style: none; margin-top: 10px; }
+    .file-list {
+      border-bottom: 1px solid #edf0f3; list-style: none; margin-top: 7px; max-height: 278px;
+      overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable;
+    }
     .file-item {
       align-items: center; border-top: 1px solid #edf0f3; display: grid;
-      gap: 10px; grid-template-columns: 30px minmax(0, 1fr) auto; padding: 11px 2px;
+      gap: 9px; grid-template-columns: 28px minmax(0, 1fr) auto; padding: 8px 2px;
     }
     .file-index {
       align-items: center; background: #eef2f7; border-radius: 50%; color: #5b6575;
       display: inline-flex; font-size: .78rem; font-weight: 700; height: 26px; justify-content: center; width: 26px;
     }
-    .file-name { font-size: .9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .file-meta { color: #8a93a3; font-size: .78rem; }
+    .file-name { font-size: .85rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-meta { color: #8a93a3; font-size: .74rem; }
     .base-badge {
       background: var(--blue-soft); border-radius: 5px; color: var(--blue); display: inline-block;
       font-size: .72rem; font-weight: 700; margin-left: 7px; padding: 1px 5px; vertical-align: 1px;
@@ -91,16 +110,19 @@
     .icon-btn:hover { background: #e8edf3; }
     .icon-btn:disabled { cursor: default; opacity: .38; }
 
-    .action-row { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+    .action-row { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
     .btn {
       align-items: center; border: 0; border-radius: 8px; cursor: pointer; display: inline-flex;
-      font-size: .92rem; font-weight: 650; justify-content: center; padding: 10px 20px; text-decoration: none;
+      font-size: .88rem; font-weight: 680; justify-content: center; min-height: 39px; padding: 8px 17px; text-decoration: none;
     }
     .btn-primary { background: var(--blue); color: #fff; }
+    .btn-secondary { background: #eef2f6; border: 1px solid #dce2e9; color: #465264; }
     .btn-success { background: #248a46; color: #fff; }
     .btn:hover { opacity: .9; }
     .btn:disabled { cursor: default; opacity: .45; }
-    .form-error { color: var(--red); font-size: .86rem; font-weight: 600; }
+    .form-error { color: var(--red); flex: 1 1 220px; font-size: .82rem; font-weight: 600; }
+
+    #progressPanel, #resultPanel { margin-top: 18px; }
 
     .progress-track { background: #edf1f5; border-radius: 999px; height: 8px; margin-top: 16px; overflow: hidden; }
     .progress-bar { background: var(--blue); height: 100%; transition: width .2s ease; width: 0; }
@@ -113,26 +135,36 @@
     .status.success strong { color: var(--green); }
 
     .result-summary { color: #475467; font-size: .9rem; margin-top: 7px; }
-    .report-wrap { border: 1px solid #e7eaee; border-radius: 8px; margin-top: 16px; overflow-x: auto; }
+    .report-wrap { border: 1px solid #e7eaee; border-radius: 8px; margin-top: 13px; max-height: 360px; overflow: auto; }
     table { border-collapse: collapse; font-size: .82rem; min-width: 710px; width: 100%; }
     th { background: #f6f8fa; color: #535d6c; font-weight: 650; text-align: left; }
     th, td { border-bottom: 1px solid #edf0f3; padding: 9px 10px; vertical-align: top; }
     tbody tr:last-child td { border-bottom: 0; }
     td:first-child { color: #7a8494; text-align: center; width: 38px; }
     td:nth-child(2) { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .result-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
+    .result-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
     .result-note { color: #7a8494; font-size: .82rem; }
     .hidden { display: none !important; }
 
-    footer { color: #999; font-size: .85rem; line-height: 1.9; margin-top: 40px; text-align: center; }
+    footer {
+      color: #999; display: flex; flex-wrap: wrap; font-size: .8rem; gap: 6px 18px;
+      justify-content: center; line-height: 1.6; margin-top: 22px; text-align: center;
+    }
     footer a { color: #999; }
     footer a:hover { color: var(--blue); }
+    @media (max-width: 900px) {
+      .workspace-grid { grid-template-columns: 1fr; }
+      .guide-panel { position: static; }
+      .merge-panel { grid-row: 1; }
+    }
     @media (max-width: 640px) {
       .container { padding: 28px 14px; }
       .panel { padding: 19px 16px; }
       .file-item { grid-template-columns: 28px minmax(0, 1fr); }
       .file-actions { grid-column: 2; }
       .selected-head { align-items: flex-start; flex-direction: column; gap: 2px; }
+      .action-row .btn { flex: 1 1 100%; }
+      footer { display: block; }
     }
   </style>
 </head>
@@ -149,36 +181,49 @@
       <span>文件只在你的<b>浏览器内存</b>中读取与合并。页面没有文件上传接口，服务器不会接收或存储所选工作簿；刷新页面后本地处理数据即被释放。</span>
     </div>
 
-    <section class="panel" aria-labelledby="instructionsTitle">
-      <h2 id="instructionsTitle">合并规则</h2>
-      <ol class="steps">
-        <li>一次选择至少 2 个 <code>.xlsx</code> 文件；列表第 1 项作为基准文件，可用“上移 / 下移”调整顺序。</li>
-        <li>每个工作簿只处理第 1 个工作表；工具会在前 50 行识别表头，并按字段名称自动对齐列。</li>
-        <li>输出仅保留 1 个工作表、1 行表头；数据不去重，单元格样式、超链接、行高、列宽和常见合并区域会尽量原样保留。</li>
-        <li>输出文件名为 <code>时间戳_第一个文件名.xlsx</code>。</li>
-      </ol>
-      <div class="compatibility">为避免静默丢失内容，若有效工作表包含无法可靠按行迁移的图片、表格对象或条件格式，工具会停止并明确提示。当前样例不含这些对象。</div>
+    <div class="workspace-grid">
+      <aside class="panel guide-panel" aria-labelledby="instructionsTitle">
+        <h2 id="instructionsTitle">合并规则</h2>
+        <ol class="steps">
+          <li>至少选择 2 个 <code>.xlsx</code>；列表第 1 项作为基准文件和输出文件名。</li>
+          <li>仅处理每个工作簿的第 1 个工作表，并在前 50 行识别表头、自动对齐字段。</li>
+          <li>输出仅保留 1 个工作表和 1 行表头；数据不去重，格式、超链接、行高与列宽尽量原样保留。</li>
+          <li>输出文件名为 <code>时间戳_第一个文件名.xlsx</code>。</li>
+        </ol>
+        <div class="compatibility">若有效工作表包含无法可靠迁移的图片、表格对象或条件格式，工具会停止并明确提示，避免静默丢失内容。</div>
+      </aside>
 
-      <button class="dropzone" id="dropzone" type="button">
-        <span class="icon" aria-hidden="true">📚</span>
-        <span class="main">点击选择多个 XLSX，或拖拽到这里</span>
-        <span class="sub">文件不会离开当前浏览器 · 支持调整合并顺序</span>
-      </button>
-      <input id="fileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple hidden>
-
-      <div class="selected hidden" id="selectedPanel">
-        <div class="selected-head">
-          <h2>待合并文件</h2>
-          <p id="fileSummary"></p>
+      <section class="panel merge-panel" aria-labelledby="filesTitle">
+        <div class="merge-head">
+          <div>
+            <h2 id="filesTitle">选择工作簿</h2>
+            <p id="fileTypeHint">仅支持多选 <code>.xlsx</code> 文件；再次选择或拖入会追加到当前列表。</p>
+          </div>
+          <span class="local-badge">仅本地处理</span>
         </div>
-        <ol class="file-list" id="fileList"></ol>
-      </div>
 
-      <div class="action-row">
-        <button class="btn btn-primary" id="mergeButton" type="button" disabled>开始合并</button>
-        <span class="form-error" id="formError" role="alert"></span>
-      </div>
-    </section>
+        <label class="dropzone" id="dropzone">
+          <input class="file-input" id="fileInput" type="file" accept=".xlsx" multiple aria-describedby="fileTypeHint">
+          <span class="icon" aria-hidden="true">📚</span>
+          <span class="main">选择或追加多个 .xlsx 文件</span>
+          <span class="sub">也可拖拽到这里 · 已有文件不会被覆盖</span>
+        </label>
+
+        <div class="selected hidden" id="selectedPanel">
+          <div class="selected-head">
+            <h3>待合并文件</h3>
+            <p id="fileSummary"></p>
+          </div>
+          <ol class="file-list" id="fileList"></ol>
+        </div>
+
+        <div class="action-row">
+          <button class="btn btn-primary" id="mergeButton" type="button" disabled>开始合并</button>
+          <button class="btn btn-secondary" id="clearButton" type="button" disabled>清空并进行下一批</button>
+          <span class="form-error" id="formError" role="alert"></span>
+        </div>
+      </section>
+    </div>
 
     <section class="panel hidden" id="progressPanel" aria-live="polite">
       <h2>处理进度</h2>
@@ -214,7 +259,7 @@
   </main>
 
   <!-- ExcelJS 4.3.0 (MIT) 固定为同源资源；文件处理不依赖第三方网络请求。 -->
-  <script src="./vendor/exceljs.min.js"></script>
-  <script type="module" src="./app.js"></script>
+  <script src="./vendor/exceljs.min.js?v=4.3.0"></script>
+  <script type="module" src="./app.js?v=20260811-3"></script>
 </body>
 </html>

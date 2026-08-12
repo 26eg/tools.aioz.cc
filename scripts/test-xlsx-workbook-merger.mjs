@@ -1,12 +1,30 @@
 import assert from 'node:assert/strict';
 import {
+  appendUniqueXlsxFiles,
   buildHeaderEntries,
   buildOutputFilename,
   buildSchemaMapping,
   isReliableAlignment,
   normalizeHeader,
+  isXlsxFilename,
   selectHeaderCandidate,
 } from '../xlsx-workbook-merger/core.js';
+
+assert.equal(isXlsxFilename('report.xlsx'), true);
+assert.equal(isXlsxFilename('REPORT.XLSX'), true);
+assert.equal(isXlsxFilename('report.xls'), false);
+assert.equal(isXlsxFilename('report.xlsx.csv'), false);
+
+const firstFile = { name: 'first.xlsx', size: 100, lastModified: 1 };
+const secondFile = { name: 'second.XLSX', size: 200, lastModified: 2 };
+const selection = appendUniqueXlsxFiles(
+  [firstFile],
+  [firstFile, secondFile, { name: 'notes.csv', size: 20, lastModified: 3 }],
+);
+assert.deepEqual(selection.files, [firstFile, secondFile]);
+assert.equal(selection.addedCount, 1);
+assert.equal(selection.duplicateCount, 1);
+assert.equal(selection.invalidCount, 1);
 
 assert.equal(normalizeHeader('  商品\n  标题  '), '商品 标题');
 assert.equal(normalizeHeader('ＡＳＩＮ'), 'asin');

@@ -1,12 +1,13 @@
 import {
   MAX_HEADER_SCAN_ROWS,
   MAX_SUPPORTED_COLUMNS,
+  appendUniqueXlsxFiles,
   buildOutputFilename,
   buildSchemaMapping,
   formatBytes,
   isReliableAlignment,
   selectHeaderCandidate,
-} from './core.js';
+} from './core.js?v=20260811-3';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const YIELD_EVERY_ROWS = 80;
@@ -18,6 +19,7 @@ const elements = {
   fileSummary: document.getElementById('fileSummary'),
   fileList: document.getElementById('fileList'),
   mergeButton: document.getElementById('mergeButton'),
+  clearButton: document.getElementById('clearButton'),
   formError: document.getElementById('formError'),
   progressPanel: document.getElementById('progressPanel'),
   progressBar: document.getElementById('progressBar'),
@@ -41,14 +43,6 @@ function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-function fileKey(file) {
-  return `${file.name}\u0000${file.size}\u0000${file.lastModified}`;
-}
-
-function isXlsx(file) {
-  return file instanceof File && /\.xlsx$/i.test(file.name);
-}
-
 function revokeOutput() {
   if (state.outputUrl) URL.revokeObjectURL(state.outputUrl);
   state.outputUrl = null;
@@ -60,26 +54,36 @@ function resetResult() {
   elements.resultPanel.classList.add('hidden');
   elements.reportBody.replaceChildren();
   elements.progressBar.style.width = '0%';
+  elements.statusBox.className = 'status';
+  elements.statusTitle.textContent = '准备处理…';
+  elements.statusDetail.textContent = '';
+  elements.resultSummary.textContent = '';
+  elements.resultNote.textContent = '';
+  elements.downloadLink.href = '#';
+  elements.downloadLink.textContent = '下载合并后的工作簿';
+  window.__xlsxWorkbookMergerLastResult = null;
 }
 
-function setFiles(fileList) {
+function addFiles(fileList) {
   if (state.processing) return;
-  const candidates = Array.from(fileList);
-  const invalid = candidates.filter((file) => !isXlsx(file));
-  const seen = new Set();
-  state.files = candidates
-    .filter(isXlsx)
-    .filter((file) => {
-      const key = fileKey(file);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  const selection = appendUniqueXlsxFiles(state.files, Array.from(fileList));
+  state.files = selection.files;
+  if (selection.addedCount) resetResult();
+  renderFileList();
+  const notices = [];
+  if (selection.invalidCount) notices.push(`已忽略 ${selection.invalidCount} 个非 .xlsx 文件。`);
+  if (selection.duplicateCount) notices.push(`已忽略 ${selection.duplicateCount} 个重复文件。`);
+  elements.formError.textContent = notices.join(' ');
+}
+
+function clearBatch() {
+  if (state.processing) return;
+  state.files = [];
+  elements.fileInput.value = '';
+  elements.formError.textContent = '';
   resetResult();
   renderFileList();
-  elements.formError.textContent = invalid.length
-    ? `已忽略 ${invalid.length} 个非 XLSX 文件。`
-    : '';
+  elements.fileInput.focus({ preventScroll: true });
 }
 
 function moveFile(index, offset) {
@@ -104,6 +108,9 @@ function renderFileList() {
   elements.selectedPanel.classList.toggle('hidden', state.files.length === 0);
   elements.fileSummary.textContent = `${state.files.length} 个文件 · ${formatBytes(totalBytes)}`;
   elements.mergeButton.disabled = state.processing || state.files.length < 2;
+  elements.clearButton.disabled = state.processing || state.files.length === 0;
+  elements.fileInput.disabled = state.processing;
+  elements.dropzone.classList.toggle('disabled', state.processing);
 
   state.files.forEach((file, index) => {
     const item = document.createElement('li');
@@ -692,11 +699,8 @@ async function mergeSelectedFiles() {
   }
 }
 
-elements.dropzone.addEventListener('click', () => {
-  if (!state.processing) elements.fileInput.click();
-});
 elements.fileInput.addEventListener('change', () => {
-  setFiles(elements.fileInput.files);
+  addFiles(elements.fileInput.files);
   elements.fileInput.value = '';
 });
 elements.fileList.addEventListener('click', (event) => {
@@ -708,6 +712,7 @@ elements.fileList.addEventListener('click', (event) => {
   if (button.dataset.action === 'remove') removeFile(index);
 });
 elements.mergeButton.addEventListener('click', mergeSelectedFiles);
+elements.clearButton.addEventListener('click', clearBatch);
 
 for (const eventName of ['dragenter', 'dragover']) {
   elements.dropzone.addEventListener(eventName, (event) => {
@@ -722,7 +727,7 @@ for (const eventName of ['dragleave', 'drop']) {
   });
 }
 elements.dropzone.addEventListener('drop', (event) => {
-  if (!state.processing) setFiles(event.dataTransfer.files);
+  if (!state.processing) addFiles(event.dataTransfer.files);
 });
 window.addEventListener('beforeunload', revokeOutput);
 
