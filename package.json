@@ -3,7 +3,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build-manifest.mjs",
-    "test": "node scripts/test-xlsx-workbook-merger.mjs"
+    "dev": "node scripts/serve-local.mjs",
+    "build": "node scripts/build-manifest.mjs && node scripts/build-desensitizer.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-xlsx-workbook-merger.mjs && node --test scripts/test-desensitizer.mjs",
+    "test:sample": "node scripts/test-desensitizer-sample.mjs",
+    "test:browser": "node scripts/test-desensitizer-browser.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12",
+    "acorn": "8.18.0",
+    "fflate": "0.8.3",
+    "parse5": "8.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright": "1.63.0",
+    "typescript": "7.0.2"
   }
 }

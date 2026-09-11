@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'; connect-src 'none'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <title>工作簿脱敏与恢复 · AIOZ 万事屋</title>
+  <link rel="stylesheet" href="./style.css?v=1">
+  <script type="module" src="./dist/app.js?v=1"></script>
+</head>
+<body>
+<main class="container">
+  <a class="back" href="/">← 返回 AIOZ 万事屋</a>
+  <header><div><p class="eyebrow">AIOZ · 数据工具</p><h1>工作簿脱敏与恢复</h1><p class="subtitle">用可恢复的编码替换名称，保留数据的分析价值。</p></div><span class="badge">本地处理</span></header>
+  <p class="privacy">文件仅在当前浏览器内存中处理，服务器不接收、不存储文件。清空或关闭页面后释放文件数据。</p>
+  <nav class="tabs" aria-label="工具功能">
+    <button type="button" data-mode="mask" class="active" aria-pressed="true"><span>01</span> 数据脱敏</button>
+    <button type="button" data-mode="restore" aria-pressed="false"><span>02</span> 恢复工作簿</button>
+    <button type="button" data-mode="report" aria-pressed="false"><span>03</span> 解密报告</button>
+  </nav>
+  <div class="workspace">
+    <section class="panel main-panel" aria-labelledby="modeTitle">
+      <div class="section-head"><div><h2 id="modeTitle">选择原始工作簿</h2><p id="modeDescription">读取所有工作表，扫描全列后自动识别数据类型。</p></div><span class="step" id="stepLabel">第 1 步 / 选择文件</span></div>
+      <div class="inputs">
+        <label class="dropzone" id="sourceDrop">
+          <input id="sourceFile" type="file" accept=".xlsx" aria-label="选择原始工作簿">
+          <span class="file-icon" aria-hidden="true">↥</span><strong id="sourcePrompt">点击选择或拖入 XLSX 工作簿</strong><span id="sourceHint">单个文件 ≤ 30 MB · 表头位于第 1 行</span>
+        </label>
+        <label class="dropzone hidden" id="dictionaryDrop">
+          <input id="dictionaryFile" type="file" accept=".xlsx" aria-label="选择对应的字典工作簿">
+          <span class="file-icon" aria-hidden="true">⌘</span><strong>选择对应的字典 XLSX</strong><span>使用同一次脱敏导出的字典</span>
+        </label>
+      </div>
+      <div class="file-summary hidden" id="fileSummary"></div>
+      <div class="actions"><button class="primary" id="run" type="button" disabled>分析工作簿</button><button class="secondary" id="clear" type="button">清空文件</button><button class="secondary hidden" id="cancel" type="button">取消处理</button></div>
+      <div id="status" role="status" aria-live="polite" class="status hidden"></div>
+      <section id="analysis" class="hidden" aria-labelledby="analysisTitle">
+        <div class="analysis-head"><div><h3 id="analysisTitle">列识别与脱敏策略</h3><p id="analysisSummary"></p></div><label class="filter"><input type="checkbox" id="focusColumns" checked> 仅看文本、日期与待检查列</label></div>
+        <p class="scope-note">支持逐列调整。数值单元格统一保留至 2 位小数；人名、店铺和日期列使用固定规则。</p>
+        <div class="table-wrap" tabindex="0" aria-label="列识别结果，可横向滚动">
+          <table><thead><tr><th>工作表 / 列</th><th>表头</th><th>识别类型</th><th>处理策略</th><th>本地示例</th><th>检查结果</th></tr></thead><tbody id="columns"></tbody></table>
+        </div>
+        <ul id="warnings" class="warnings"></ul>
+      </section>
+      <section id="result" class="result hidden" aria-labelledby="resultTitle">
+        <h3 id="resultTitle">处理完成</h3><p id="resultSummary"></p><a id="download" class="download">下载文件</a><p id="resultNote" class="result-note"></p>
+      </section>
+    </section>
+    <aside class="panel guide">
+      <h2 id="guideTitle">脱敏规则</h2>
+      <div id="maskGuide">
+        <ol><li>选择工作簿，自动扫描所有列。</li><li>核对类型与策略，调整需保留的文本列。</li><li>生成 ZIP，内含脱敏工作簿与字典。</li></ol>
+        <dl><dt>人名统一编码</dt><dd>销售员、销售员*、IPD、GTM 共用字典；同一完整人名只对应一个编码。</dd><dt>店铺保留后缀</dt><dd>按完整名称去重后保留末尾 3 个 Unicode 字符；不足 3 字保留完整原值。</dd><dt>其他列独立编码</dt><dd>各列独立去重。不同列编码不重复，人名共用映射除外。</dd><dt>日期与小数</dt><dd>仅转换明确日期；日期列不脱敏。数值按底层值四舍五入至 2 位，包括负数与比例值。</dd><dt>真空白</dt><dd>空字符串、纯空格和不可见空白字符清为真空白；0、false、NULL、N/A 不当作空白。</dd></dl>
+      </div>
+      <div id="restoreGuide" class="hidden"><ol><li>选择需恢复的工作簿。</li><li>选择同一次导出的字典。</li><li>校验映射并导出已解密 XLSX。</li></ol><p>恢复名称和工作表名。已清洗的日期、两位小数和真空白保持不变。</p><p>支持数据行排序与筛选后的子集；保留首行表头与完整编码。混用其他批次或编码残缺会停止处理。</p></div>
+      <div id="reportGuide" class="hidden"><ol><li>选择 UTF-8 编码的 HTML 报告。</li><li>选择对应的字典工作簿。</li><li>下载恢复原始名称的 HTML。</li></ol><p>处理正文、常规属性、内嵌 JSON 和 JavaScript 字符串；保留报告结构。工具不会打开或执行报告。</p><p>图片里的文字、外部文件、压缩/编码数据、跨标签拆开的编码，以及 CSS 或 URL 中的编码需要先转换为普通文本。</p></div>
+      <div class="notice"><strong>字典等同于恢复钥匙</strong><p>字典含原始明文。对外共享时只发送脱敏工作簿，不要发送整个 ZIP。店铺后 3 字符和同值关系仍会保留。</p></div>
+      <details><summary>文件兼容范围</summary><p>处理所有工作表，含隐藏行列与隐藏表；表名替换为“工作表1…”并可恢复。保留列宽、行高、冻结窗格、筛选和常规单元格格式。</p><p>表头统一在第 1 行。每文件 ≤ 30 MB、解压后 ≤ 100 MB、已存储单元格 ≤ 500,000。复杂对象、公式、合并、超链接、验证、条件格式和保护表暂不支持，先导出为值表。</p><p>共享字符串缓存、作者属性、人员信息、页眉页脚和自定义名称会清理。富文本恢复为普通文本。文件名与表头保持原样，分享前自行检查其中是否有敏感信息。</p><p>自动识别不会理解所有业务含义。仅由数字组成的账号应在源文件中设为文本；前导零标识和长数字文本默认按文本处理。</p></details>
+    </aside>
+  </div>
+  <footer>© 2026 AIOZ 万事屋 · <a href="./dist/THIRD-PARTY-LICENSES.txt">开源组件许可</a></footer>
+</main>
+</body>
+</html>
