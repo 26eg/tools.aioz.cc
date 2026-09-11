@@ -47,7 +47,7 @@ export function restoreReportText(source: string, dict: Dictionary): { text: str
     }
     let ast: JsNode;
     try { ast = parseJavaScript(code, { ecmaVersion: 'latest', sourceType: module ? 'module' : 'script', allowReturnOutsideFunction: true }); }
-    catch { check(!/DM|\\u/i.test(code), '报告含无法解析的脚本编码，请将名称数据放入有效 JSON 或普通 JS 字符串。'); return code; }
+    catch { check(!replacer.hasTokens(code), '报告含无法解析的脚本编码，请将名称数据放入有效 JSON 或普通 JS 字符串。'); return code; }
     const changes: Edit[] = [];
     const stack: JsNode[] = [ast];
     while (stack.length) {
@@ -80,7 +80,7 @@ export function restoreReportText(source: string, dict: Dictionary): { text: str
       catch { throw new Error('名称替换后脚本语法不兼容，请将名称放入普通字符串或 JSON 数据。'); }
     }
     // Code/regex/comment occurrences are intentionally not edited as JavaScript strings.
-    check(!new RegExp(`DM[0-9A-F]{16}_C[0-9A-F]{4}_V[0-9A-F]{6}Z`).test(result), '脚本中仍有非字符串形式的脱敏编码，无法完整解密。');
+    check(!replacer.hasTokens(result), '脚本中仍有非字符串形式的脱敏编码，无法完整解密。');
     return result;
   };
   const stack: DefaultTreeAdapterMap['node'][] = [document];
@@ -112,14 +112,14 @@ export function restoreReportText(source: string, dict: Dictionary): { text: str
           const code = textNode.value;
           const isJson = /json/.test(type) || type === 'importmap' || type === 'speculationrules';
           const supported = isJson || ['', 'module', 'text/javascript', 'application/javascript'].includes(type);
-          if (!supported) { check(!/DM[0-9A-F]{16}_/.test(code), '不支持此报告脚本数据格式。'); continue; }
+          if (!supported) { check(!replacer.hasTokens(code), '不支持此报告脚本数据格式。'); continue; }
           const restored = javascript(code, type === 'module', isJson);
           if (restored !== code) edits.push({ start: textNode.sourceCodeLocation.startOffset, end: textNode.sourceCodeLocation.endOffset, value: restored });
         }
         continue;
       }
       if (node.tagName === 'style') {
-        check(!node.childNodes.some((item) => 'value' in item && /DM[0-9A-F]{16}_/.test(item.value)), 'CSS 中含脱敏名称，暂不支持自动恢复。');
+        check(!node.childNodes.some((item) => 'value' in item && replacer.hasTokens(item.value)), 'CSS 中含脱敏名称，暂不支持自动恢复。');
         continue;
       }
       if (node.tagName === 'template' && 'content' in node) stack.push(node.content);
@@ -132,7 +132,7 @@ export function restoreReportText(source: string, dict: Dictionary): { text: str
   }
   check(replacer.matched() > 0, '报告中未找到字典对应的编码，或名称已被截断 / 改写。');
   const result = applyEdits(source, edits);
-  check(!/DM[0-9A-F]{16}_C[0-9A-F]{4}_V[0-9A-F]{6}Z/.test(result), '报告中仍有未恢复的编码（例如注释或跨标签文本），未生成部分解密文件。');
+  check(!replacer.hasTokens(result), '报告中仍有未恢复的编码（例如注释或跨标签文本），未生成部分解密文件。');
   return { text: result, restored: replacer.matched() };
 }
 export async function restoreReport(source: string, dictionaryBytes: Uint8Array, sourceName: string, now = new Date()): Promise<{ text: string; filename: string; restored: number }> {

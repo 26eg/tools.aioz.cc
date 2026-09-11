@@ -20,7 +20,7 @@ let revision = 0;
 const overrides: Record<string, Mode> = {};
 const show = (id: string, visible: boolean): void => { element(id).classList.toggle('hidden', !visible); };
 const modes = {
-  mask: { title: '选择原始工作簿', description: '读取所有工作表，扫描全列后自动识别数据类型。', action: '分析工作簿', prompt: '点击选择或拖入 XLSX 工作簿', accept: '.xlsx', hint: '单个文件 ≤ 30 MB · 表头位于第 1 行' },
+  mask: { title: '选择原始工作簿', description: '默认处理第 1 个工作表，扫描全列后自动识别数据类型。', action: '分析工作簿', prompt: '点击选择或拖入 XLSX 工作簿', accept: '.xlsx', hint: '单个文件 ≤ 50 MB · 表头位于第 1 行' },
   restore: { title: '恢复工作簿中的原始名称', description: '选择脱敏工作簿与对应字典，自动匹配完整编码。', action: '恢复并生成 XLSX', prompt: '选择需要恢复的 XLSX', accept: '.xlsx', hint: '保留首行表头与完整编码 · 支持排序后的数据' },
   report: { title: '解密分析报告中的名称', description: '恢复正文、属性与图表数据中的名称，导出 HTML。', action: '解密并生成 HTML', prompt: '选择需要解密的 HTML 报告', accept: '.html,.htm', hint: 'UTF-8 编码 · 单个报告 ≤ 20 MB' },
 };
@@ -119,7 +119,7 @@ function renderAnalysis(): void {
 function choose(file: File | undefined, dictionary: boolean): void {
   if (busy || !file) return;
   const accepted = dictionary || mode !== 'report' ? /\.xlsx$/i : /\.html?$/i;
-  const limit = !dictionary && mode === 'report' ? 20 : 30;
+  const limit = !dictionary && mode === 'report' ? 20 : 50;
   if (!accepted.test(file.name) || !file.size || file.size > limit * 1024 * 1024) {
     if (dictionary) { dictionaryFile = undefined; dictionaryInput.value = ''; } else { sourceFile = undefined; sourceInput.value = ''; analysis = undefined; show('analysis', false); worker.postMessage({ action: 'reset' }); }
     revokeResult(); sync(); notify(`请选择非空的 ${dictionary || mode !== 'report' ? 'XLSX' : 'HTML'} 文件，大小不超过 ${limit} MB。`, 'error'); return;
@@ -134,7 +134,7 @@ async function execute(): Promise<void> {
   if (busy || !sourceFile || (mode !== 'mask' && !dictionaryFile)) return;
   const operation = revision;
   busy = true; revokeResult(); sync(); notify('正在本地读取文件…');
-  timeout = setTimeout(() => { revision++; worker.terminate(); analysis = undefined; finish(); show('analysis', false); notify('处理超过 120 秒，已停止。请拆分工作簿或减少单元格数量后重试。', 'error'); startWorker(); }, 120000);
+  timeout = setTimeout(() => { revision++; worker.terminate(); analysis = undefined; finish(); show('analysis', false); notify('处理超过 300 秒，已停止。请拆分工作簿或减少单元格数量后重试。', 'error'); startWorker(); }, 300000);
   try {
     let request: Request;
     if (mode === 'mask' && analysis) request = { action: 'mask', overrides: { ...overrides } };

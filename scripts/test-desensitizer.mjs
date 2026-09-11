@@ -58,13 +58,14 @@ test('ZIP rejects oversized declared contents, bad CRC, invalid formats and dupl
   const modified = new Uint8Array(zip); const v = new DataView(modified.buffer);
   let p = 0; while (v.getUint32(p, true) !== 0x02014b50) p++;
   v.setUint32(p + 24, e.MAX_EXPANDED_BYTES + 1, true);
-  assert.throws(() => e.openZip(modified), /100 MB/);
+  assert.throws(() => e.openZip(modified), /250 MB/);
   const badCrc = new Uint8Array(zip); new DataView(badCrc.buffer).setUint32(p + 16, 0, true);
   assert.throws(() => e.openZip(badCrc), /CRC/);
 });
 test('all salesperson-prefixed columns, IPD and GTM share one exact-value dictionary', () => {
   const names = dict.mappings.filter((m) => m.domain === '人员共用');
   assert.equal(names.length, 3);
+  assert.equal(value(masked.workbook, 'A2'), '人1');
   assert.equal(value(masked.workbook, 'A2'), value(masked.workbook, 'B2'));
   assert.equal(value(masked.workbook, 'A2'), value(masked.workbook, 'E3'));
   assert.notEqual(value(masked.workbook, 'A4'), value(masked.workbook, 'A2'));
@@ -78,7 +79,7 @@ test('store uses the full name as key, retains last three code points, and disti
   assert.match(value(masked.workbook, 'F2'), /-US$/);
   assert.match(value(masked.workbook, 'F3'), /-US$/);
   assert.notEqual(value(masked.workbook, 'F2'), value(masked.workbook, 'F3'));
-  assert.match(value(masked.workbook, 'F4'), /Z店$/);
+  assert.match(value(masked.workbook, 'F4'), /店$/);
   const result = await e.maskWorkbook(fixture([['店铺'], ['商店😀🇺X'], ['商店😀🇺X']]), '店.xlsx');
   assert.equal(value(result.workbook, 'A2'), value(result.workbook, 'A3'));
   assert.equal([...value(result.workbook, 'A2')].slice(-3).join(''), '😀🇺X');
@@ -120,8 +121,8 @@ test('incorrect, truncated, mixed-batch and tampered dictionaries are rejected',
   await assert.rejects(e.restoreWorkbook(masked.workbook, other.dictionary, 'r.xlsx'), /批次/);
   const mixed = fixture([['名称'], [value(other.workbook, 'A2')], [value(masked.workbook, 'A2')]]);
   await assert.rejects(e.restoreWorkbook(mixed, masked.dictionary, 'r.xlsx'), /未知脱敏编码/);
-  const partial = fixture([['名称'], [value(masked.workbook, 'A2').slice(0, -1)]]);
-  await assert.rejects(e.restoreWorkbook(partial, masked.dictionary, 'r.xlsx'), /残缺/);
+  const partial = fixture([['名称'], [value(masked.workbook, 'A2') + '-残缺']]);
+  await assert.rejects(e.restoreWorkbook(partial, masked.dictionary, 'r.xlsx'), /必须完整匹配/);
   const dictBook = e.readBook(masked.dictionary);
   e.writeCell(dictBook.sheets[1].cells.find((c) => c.ref === 'B2'), '篡改');
   await assert.rejects(e.readDictionary(e.saveBook(dictBook)), /完整性/);
@@ -134,7 +135,9 @@ test('a store suffix modification is detected during restore', async () => {
 test('duplicate masking is refused and every run has a distinct batch', async () => {
   await assert.rejects(e.maskWorkbook(masked.workbook, '再次.xlsx'), /已有脱敏批次/);
   const again = await e.maskWorkbook(source, '同一原件.xlsx');
-  assert.notEqual(value(again.workbook, 'A2'), value(masked.workbook, 'A2'));
+  const againDict = await e.readDictionary(again.dictionary);
+  assert.notEqual(againDict.batch, dict.batch);
+  assert.equal(value(again.workbook, 'A2'), '人1');
 });
 test('ZIP has exactly two correctly named workbooks', () => {
   const parts = e.openZip(masked.zip);
@@ -142,14 +145,29 @@ test('ZIP has exactly two correctly named workbooks', () => {
   assert.match(masked.filename, /^示例_已脱密_\d{8}-\d{6}-\d{3}\.zip$/);
   assert.match(masked.dictionaryName, /_脱密字典_/);
 });
-test('multiple worksheets and hidden cells are covered, distinct domains remain separate', async () => {
-  const multi = e.tableWorkbook([{ name: '甲', rows: [['销售员', '品牌'], ['甲人', '同品牌']] }, { name: '乙', rows: [['IPD', '品牌'], ['甲人', '同品牌']] }]);
-  const parts = e.openZip(multi);
-  parts['xl/workbook.xml'] = e.encode(e.decode(parts['xl/workbook.xml']).replace('name="乙"', 'name="乙" state="veryHidden"'));
-  const result = await e.maskWorkbook(e.pack(parts), '多表.xlsx');
-  assert.equal(value(result.workbook, 'A2'), value(result.workbook, 'A2', 1));
-  assert.notEqual(value(result.workbook, 'B2'), value(result.workbook, 'B2', 1));
-  assert.equal(e.readBook(result.workbook).sheets[1].node.getAttribute('state'), 'veryHidden');
+test('multiple worksheets only process the 1st worksheet, and output has only 1 sheet', async () => {
+  const multi = e.tableWorkbook([{ name: '甲', rows: [['销售员', '品牌'], ['甲人', '同品牌']] }, { name: '乙', rows: [['IPD', '品牌'], ['乙人', '同品牌']] }]);
+  const result = await e.maskWorkbook(multi, '多表.xlsx');
+  const outBook = e.readBook(result.workbook);
+  assert.equal(outBook.sheets.length, 1);
+  assert.equal(outBook.sheets[0].name, '工作表1');
+  assert.equal(value(result.workbook, 'A2'), '人1');
+  assert.equal(value(result.workbook, 'B2'), 'B1');
+  const restored = await e.restoreWorkbook(result.workbook, result.dictionary, '多表.xlsx');
+  assert.equal(e.readBook(restored.bytes).sheets[0].name, '甲');
+});
+test('anti-collision avoids tokens already present in original sheet text', async () => {
+  const colTest = fixture([['名称', '销售员'], ['A1', '人1'], ['新值', '张三']]);
+  const result = await e.maskWorkbook(colTest, '防碰撞.xlsx');
+  assert.equal(value(result.workbook, 'A2'), 'A2');
+  assert.equal(value(result.workbook, 'A3'), 'A3');
+  assert.equal(value(result.workbook, 'B2'), '人2');
+  assert.equal(value(result.workbook, 'B3'), '人3');
+  const restored = await e.restoreWorkbook(result.workbook, result.dictionary, '防碰撞.xlsx');
+  assert.equal(value(restored.bytes, 'A2'), 'A1');
+  assert.equal(value(restored.bytes, 'A3'), '新值');
+  assert.equal(value(restored.bytes, 'B2'), '人1');
+  assert.equal(value(restored.bytes, 'B3'), '张三');
 });
 test('numeric-only workbooks remain restorable with the batch marker; dates cannot be overridden to mask', async () => {
   const result = await e.maskWorkbook(fixture([['金额', '日期'], [1.005, '2024-02-29']]), '数值.xlsx');
@@ -184,7 +202,7 @@ test('HTML text and attributes are escaped; JS and JSON literals are context-saf
 });
 test('report restores HTML-entity store suffixes and Unicode-escaped JS values', () => {
   const escapedStore = storeToken.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const unicodeToken = nameToken.replace(/^D/, '\\u0044');
+  const unicodeToken = nameToken.replace(/^A/, '\\u0041');
   const result = e.restoreReportText(`<p>${escapedStore}</p><script>window.name = "${unicodeToken}";</script>`, htmlDict);
   assert.equal(result.restored, 2); assert.match(result.text, /店铺&lt;&amp;&gt;/);
 });
@@ -200,7 +218,7 @@ test('reports refuse unknown dictionaries, truncated names, unsafe contexts, inv
     `<a href="/${nameToken}">链接</a>`, `<script type="application/json">{"x": ${nameToken}}</script>`,
     `<meta charset="GBK"><p>${nameToken}</p>`, `<script>const name = \`${nameToken}\${count}\`;</script>`,
   ]) assert.throws(() => e.restoreReportText(html, htmlDict));
-  assert.throws(() => e.restoreReportText(`<p>${nameToken}</p>`, dict), /未知脱敏编码/);
+  assert.throws(() => e.restoreReportText(`<p>${nameToken}</p>`, dict), /未找到字典对应的编码|未知脱敏编码/);
 });
 test('HTML JSON replacement preserves original numeric literals and whitespace exactly', () => {
   const result = e.restoreReportText(`<script type="application/json">{ "name": "${nameToken}", "id": 9007199254740993123, "amount": 0.123456789123456789, "large": 1e309 }</script>`, htmlDict);
@@ -237,4 +255,48 @@ test('a numeric-text column can be explicitly masked without masking actual nume
   assert.equal(value(result.workbook, 'A3'), 5678);
   const restored = await e.restoreWorkbook(result.workbook, result.dictionary, '客户.xlsx');
   assert.equal(value(restored.bytes, 'A2'), '1234');
+});
+test('auxiliary parts like drawings, comments, printerSettings, calcChain are accepted and safely stripped', async () => {
+  const parts = e.openZip(fixture([['姓名', '店铺'], ['张三', '测试店-US']]));
+  parts['xl/drawings/drawing1.xml'] = e.encode('<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"/>');
+  parts['xl/drawings/_rels/drawing1.xml.rels'] = e.encode('<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>');
+  parts['xl/printerSettings/printerSettings1.bin'] = new Uint8Array([1, 2, 3, 4]);
+  parts['xl/comments1.xml'] = e.encode('<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>');
+  parts['xl/calcChain.xml'] = e.encode('<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>');
+  // Inject drawing reference into sheet1.xml
+  const sheetXml = e.decode(parts['xl/worksheets/sheet1.xml']).replace('</worksheet>', '<drawing r:id="rIdDrawing1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><legacyDrawing r:id="rIdLegacy1" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></worksheet>');
+  parts['xl/worksheets/sheet1.xml'] = e.encode(sheetXml);
+  const rawXlsx = e.pack(parts);
+  // readBook should not throw:
+  const book = e.readBook(rawXlsx);
+  assert.ok(book.sheets.length > 0);
+  // maskWorkbook should succeed:
+  const masked = await e.maskWorkbook(rawXlsx, '含控件测试.xlsx');
+  const outParts = e.openZip(masked.workbook);
+  assert.ok(!outParts['xl/drawings/drawing1.xml']);
+  assert.ok(!outParts['xl/drawings/_rels/drawing1.xml.rels']);
+  assert.ok(!outParts['xl/printerSettings/printerSettings1.bin']);
+  assert.ok(!outParts['xl/comments1.xml']);
+  assert.ok(!outParts['xl/calcChain.xml']);
+  // References should be cleaned up from sheet xml:
+  const outSheetXml = e.decode(outParts['xl/worksheets/sheet1.xml']);
+  assert.ok(!outSheetXml.includes('<drawing'));
+  assert.ok(!outSheetXml.includes('<legacyDrawing'));
+  // And restore works:
+  const restored = await e.restoreWorkbook(masked.workbook, masked.dictionary, '含控件测试.xlsx');
+  assert.equal(value(restored.bytes, 'A2'), '张三');
+});
+test('columns where all numbers are positive or integers do not have extra 2 decimals forced', async () => {
+  const input = fixture([
+    ['销量', '数量', '金额'],
+    ['10', 5, 1.005],
+    ['25', 12, -1.005],
+  ]);
+  const result = await e.maskWorkbook(input, '正数测试.xlsx');
+  assert.equal(value(result.workbook, 'A2'), 10);
+  assert.equal(value(result.workbook, 'A3'), 25);
+  assert.equal(value(result.workbook, 'B2'), 5);
+  assert.equal(value(result.workbook, 'B3'), 12);
+  assert.equal(value(result.workbook, 'C2'), 1.01);
+  assert.equal(value(result.workbook, 'C3'), -1.01);
 });

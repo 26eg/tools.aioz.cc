@@ -17,7 +17,7 @@ self.onmessage = async (event: MessageEvent<Request>) => {
     self.postMessage({ type: 'progress', text: '正在浏览器内存中读取与校验文件…' });
     if (request.action === 'analyze') {
       source = undefined;
-      const analysis = analyze(readBook(request.bytes));
+      const analysis = analyze(readBook(request.bytes, true));
       source = { bytes: request.bytes, name: request.name };
       self.postMessage({ type: 'analysis', analysis });
     } else if (request.action === 'mask') {

@@ -4,9 +4,9 @@ import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate';
 export const MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 export const REL = 'http://schemas.openxmlformats.org/package/2006/relationships';
 export const DOC_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
-export const MAX_FILE_BYTES = 30 * 1024 * 1024;
-export const MAX_EXPANDED_BYTES = 100 * 1024 * 1024;
-export const MAX_CELLS = 500_000;
+export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+export const MAX_EXPANDED_BYTES = 250 * 1024 * 1024;
+export const MAX_CELLS = 2_000_000;
 export type Parts = Record<string, Uint8Array>;
 export type Value = string | number | boolean | null;
 export type XmlDocument = Document;
@@ -63,7 +63,7 @@ function crc32(bytes: Uint8Array): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 export function openZip(bytes: Uint8Array): Parts {
-  check(bytes.length >= 22 && bytes.length <= MAX_FILE_BYTES, '请选择有效 XLSX，单个文件不得超过 30 MB。');
+  check(bytes.length >= 22 && bytes.length <= MAX_FILE_BYTES, '请选择有效 XLSX，单个文件不得超过 50 MB。');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let end = bytes.length - 22;
   for (; end >= Math.max(0, bytes.length - 65557); end--) {
@@ -89,7 +89,7 @@ export function openZip(bytes: Uint8Array): Parts {
     const name = decode(bytes.subarray(offset + 46, offset + 46 + nameSize));
     check(name && !name.startsWith('/') && !name.includes('\\') && !name.split('/').includes('..') && !name.includes('\0') && !entries.has(name), 'ZIP 包含重复或不安全的部件名称。');
     expanded += size;
-    check(expanded <= MAX_EXPANDED_BYTES, '工作簿解压后超过 100 MB，请拆分后处理。');
+    check(expanded <= MAX_EXPANDED_BYTES, '工作簿解压后超过 250 MB，请拆分后处理。');
     entries.set(name, { size, crc: view.getUint32(offset + 16, true) });
     offset += 46 + nameSize + extraSize + commentSize;
   }
@@ -116,10 +116,10 @@ export async function sha256(value: string | Uint8Array): Promise<string> {
 export interface Cell { node: Element; ref: string; row: number; col: number; value: Value; style: number; date: boolean; }
 export interface Sheet { name: string; path: string; node: Element; document: Document; cells: Cell[]; maxRow: number; maxCol: number; }
 export interface Book { parts: Parts; workbook: Document; styles: Document; sheets: Sheet[]; date1904: boolean; }
-const standardPart = /^(?:\[Content_Types\]\.xml|_rels\/\.rels|docProps\/[A-Za-z0-9_-]+\.xml|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/styles\.xml|xl\/sharedStrings\.xml|xl\/theme\/theme\d+\.xml|xl\/worksheets\/sheet\d+\.xml|xl\/worksheets\/_rels\/sheet\d+\.xml\.rels|xl\/persons\/person\.xml)$/;
+const standardPart = /^(?:\[Content_Types\]\.xml|_rels\/\.rels|docProps\/[A-Za-z0-9_-]+\.xml|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/styles\.xml|xl\/sharedStrings\.xml|xl\/theme\/theme\d+\.xml|xl\/worksheets\/sheet\d+\.xml|xl\/worksheets\/_rels\/sheet\d+\.xml\.rels|xl\/persons\/person\.xml|xl\/drawings\/(?:_rels\/)?[A-Za-z0-9_.-]+|xl\/media\/[A-Za-z0-9_.-]+|xl\/printerSettings\/[A-Za-z0-9_.-]+|xl\/calcChain\.xml|xl\/comments\d+\.xml|xl\/comments\/_rels\/[A-Za-z0-9_.-]+|xl\/threadedComments\/[A-Za-z0-9_.-]+|xl\/ctrlProps\/[A-Za-z0-9_.-]+|xl\/tables\/[A-Za-z0-9_.-]+)$/;
 const emptyStyles = `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${MAIN}"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
 
-export function readBook(bytes: Uint8Array): Book {
+export function readBook(bytes: Uint8Array, firstSheetOnly = false): Book {
   const parts = openZip(bytes);
   for (const path of Object.keys(parts)) check(standardPart.test(path), `暂不支持部件 ${path}。请先导出为仅含数据与单元格格式的 XLSX。`);
   for (const path of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels']) check(parts[path], `工作簿缺少 ${path}。`);
@@ -139,7 +139,9 @@ export function readBook(bytes: Uint8Array): Book {
   });
   const sheets: Sheet[] = [];
   let total = 0;
-  for (const node of elements(workbook, 'sheet')) {
+  const sheetNodes = elements(workbook, 'sheet');
+  const targetNodes = firstSheetOnly ? sheetNodes.slice(0, 1) : sheetNodes;
+  for (const node of targetNodes) {
     const name = node.getAttribute('name') ?? '';
     check(name.length > 0 && name.length <= 31 && !/[\\/*?:\[\]]/.test(name), '工作表名称无效。');
     const rel = rels.get(node.getAttributeNS(DOC_REL, 'id'));
@@ -156,7 +158,7 @@ export function readBook(bytes: Uint8Array): Book {
     const cells: Cell[] = [];
     let maxRow = 0, maxCol = 0;
     for (const cell of elements(document, 'c')) {
-      check(++total <= MAX_CELLS, '工作簿超过 500,000 个已存储单元格，请拆分后处理。');
+      check(++total <= MAX_CELLS, '工作簿超过 2,000,000 个已存储单元格，请拆分后处理。');
       const ref = cell.getAttribute('r') ?? '';
       const position = address(ref);
       check(!seen.has(ref), '工作表存在重复单元格。'); seen.add(ref);
@@ -178,10 +180,53 @@ export function readBook(bytes: Uint8Array): Book {
     sheets.push({ name, path, node, document, cells, maxRow, maxCol });
   }
   check(sheets.length > 0, '工作簿没有工作表。');
-  const referenced = new Set(sheets.map((sheet) => sheet.path));
-  check(Object.keys(parts).filter((path) => /^xl\/worksheets\/sheet\d+\.xml$/.test(path)).every((path) => referenced.has(path)), '工作簿包含未引用的工作表，无法保证脱敏完整。');
+  if (!firstSheetOnly) {
+    const referenced = new Set(sheets.map((sheet) => sheet.path));
+    check(Object.keys(parts).filter((path) => /^xl\/worksheets\/sheet\d+\.xml$/.test(path)).every((path) => referenced.has(path)), '工作簿包含未引用的工作表，无法保证脱敏完整。');
+  }
   const date1904 = ['1', 'true'].includes(elements(workbook, 'workbookPr')[0]?.getAttribute('date1904') ?? '');
   return { parts, workbook, styles, sheets, date1904 };
+}
+export function isolateFirstSheet(book: Book): void {
+  const sheetNodes = elements(book.workbook, 'sheet');
+  if (sheetNodes.length <= 1 && book.sheets.length <= 1) return;
+  const relsDoc = book.parts['xl/_rels/workbook.xml.rels'] ? parseXml(decode(book.parts['xl/_rels/workbook.xml.rels']!)) : null;
+  const contentTypesDoc = book.parts['[Content_Types].xml'] ? parseXml(decode(book.parts['[Content_Types].xml']!)) : null;
+  const removedRelIds = new Set<string>();
+  const removedSheetPaths = new Set<string>();
+  for (let i = 1; i < sheetNodes.length; i++) {
+    const node = sheetNodes[i]!;
+    const rId = node.getAttributeNS(DOC_REL, 'id') || node.getAttribute('r:id');
+    if (rId) removedRelIds.add(rId);
+    node.parentNode!.removeChild(node);
+  }
+  if (relsDoc) {
+    for (const rel of elements(relsDoc, 'Relationship', REL)) {
+      const id = rel.getAttribute('Id');
+      if (id && removedRelIds.has(id)) {
+        const target = rel.getAttribute('Target') ?? '';
+        const path = target.startsWith('/') ? target.slice(1) : `xl/${target.replace(/^\.\//, '')}`;
+        removedSheetPaths.add(path);
+        rel.parentNode!.removeChild(rel);
+      }
+    }
+    book.parts['xl/_rels/workbook.xml.rels'] = encode(xml(relsDoc));
+  }
+  if (contentTypesDoc) {
+    for (const item of elements(contentTypesDoc, 'Override', 'http://schemas.openxmlformats.org/package/2006/content-types')) {
+      const partName = (item.getAttribute('PartName') ?? '').replace(/^\//, '');
+      if (removedSheetPaths.has(partName) || /^xl\/worksheets\/sheet[2-9]\d*\.xml$/.test(partName)) {
+        item.parentNode!.removeChild(item);
+      }
+    }
+    book.parts['[Content_Types].xml'] = encode(xml(contentTypesDoc));
+  }
+  for (const path of Object.keys(book.parts)) {
+    if (removedSheetPaths.has(path) || /^xl\/worksheets\/sheet[2-9]\d*\.xml$/.test(path) || /^xl\/worksheets\/_rels\/sheet[2-9]\d*\.xml\.rels$/.test(path)) {
+      delete book.parts[path];
+    }
+  }
+  book.sheets = book.sheets.slice(0, 1);
 }
 function textRuns(element: Element): string {
   return excelDecode(elements(element, 't').filter((t) => t.parentNode?.nodeName !== 'rPh').map((t) => t.textContent ?? '').join(''));
@@ -241,19 +286,21 @@ export function saveBook(book: Book): Uint8Array {
   return packXlsx(book.parts);
 }
 function packXlsx(parts: Parts): Uint8Array {
-  check(Object.values(parts).reduce((sum, bytes) => sum + bytes.length, 0) <= MAX_EXPANDED_BYTES, '生成的 XLSX 展开后超过 100 MB，请拆分源文件后重试，以保证结果可恢复。');
+  check(Object.values(parts).reduce((sum, bytes) => sum + bytes.length, 0) <= MAX_EXPANDED_BYTES, '生成的 XLSX 展开后超过 250 MB，请拆分源文件后重试，以保证结果可恢复。');
   const bytes = pack(parts);
-  check(bytes.length <= MAX_FILE_BYTES, '生成的 XLSX 超过 30 MB，请拆分后重试，以保证结果可恢复。');
+  check(bytes.length <= MAX_FILE_BYTES, '生成的 XLSX 超过 50 MB，请拆分后重试，以保证结果可恢复。');
   return bytes;
 }
 export function sanitize(book: Book): number {
-  const removed = new Set(Object.keys(book.parts).filter((path) => /^(docProps\/|xl\/persons\/|xl\/sharedStrings\.xml$|xl\/worksheets\/_rels\/)/.test(path)));
+  const removed = new Set(Object.keys(book.parts).filter((path) => /^(docProps\/|xl\/persons\/|xl\/sharedStrings\.xml$|xl\/worksheets\/_rels\/|xl\/drawings\/|xl\/media\/|xl\/printerSettings\/|xl\/comments|xl\/threadedComments\/|xl\/calcChain\.xml|xl\/ctrlProps\/|xl\/tables\/)/.test(path)));
   for (const path of removed) delete book.parts[path];
   for (const path of ['_rels/.rels', 'xl/_rels/workbook.xml.rels']) {
+    if (!book.parts[path]) continue;
     const doc = parseXml(decode(book.parts[path]!));
     for (const rel of elements(doc, 'Relationship', REL)) {
       const type = rel.getAttribute('Type') ?? '';
-      if (/properties|person|sharedStrings/i.test(type)) rel.parentNode!.removeChild(rel);
+      const target = rel.getAttribute('Target') ?? '';
+      if (/properties|person|sharedStrings|calcChain/i.test(type) || /calcChain\.xml|printerSettings|drawings/i.test(target)) rel.parentNode!.removeChild(rel);
       else check(!rel.getAttribute('TargetMode'), '不支持外部工作簿关系。');
     }
     book.parts[path] = encode(xml(doc));
@@ -262,16 +309,24 @@ export function sanitize(book: Book): number {
   for (const item of elements(content, 'Override', 'http://schemas.openxmlformats.org/package/2006/content-types')) {
     if (removed.has((item.getAttribute('PartName') ?? '').replace(/^\//, ''))) item.parentNode!.removeChild(item);
   }
+  for (const item of elements(content, 'Default', 'http://schemas.openxmlformats.org/package/2006/content-types')) {
+    const ext = (item.getAttribute('Extension') ?? '').toLowerCase();
+    if (['png', 'jpg', 'jpeg', 'gif', 'bin', 'vml', 'emf', 'wmf', 'tiff'].includes(ext)) item.parentNode!.removeChild(item);
+  }
   book.parts['[Content_Types].xml'] = encode(xml(content));
-  for (const tag of ['definedNames', 'extLst', 'fileSharing', 'webPublishing']) {
+  for (const tag of ['definedNames', 'extLst', 'fileSharing', 'webPublishing', 'calcPr']) {
     for (const node of elements(book.workbook, tag)) node.parentNode!.removeChild(node);
   }
   for (const sheet of book.sheets) {
-    for (const tag of ['headerFooter', 'extLst', 'sheetPr']) {
+    for (const tag of ['headerFooter', 'extLst', 'sheetPr', 'drawing', 'legacyDrawing', 'legacyDrawingHF', 'picture', 'tableParts', 'customSheetViews']) {
       for (const node of elements(sheet.document, tag)) {
         if (tag === 'sheetPr') { node.removeAttribute('codeName'); continue; }
         node.parentNode!.removeChild(node);
       }
+    }
+    for (const pageSetup of elements(sheet.document, 'pageSetup')) {
+      pageSetup.removeAttributeNS(DOC_REL, 'id');
+      pageSetup.removeAttribute('r:id');
     }
   }
   return removed.size;

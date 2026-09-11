@@ -1,19 +1,17 @@
-import { type Book, type Cell, type Value, check, readBook, tableWorkbook, columnName, writeCell, StyleBuilder, saveBook, sanitize, sha256, pack, setBatch, getBatch } from './ooxml';
+import { type Book, type Cell, type Value, check, readBook, tableWorkbook, columnName, writeCell, StyleBuilder, saveBook, sanitize, sha256, pack, setBatch, getBatch, isolateFirstSheet, elements } from './ooxml';
 
 export type Mode = 'mask' | 'keep' | 'date';
 export interface ColumnRule {
   key: string; sheet: string; col: number; letter: string; header: string; type: string;
   mode: Mode; reason: string; nonEmpty: number; fakeBlanks: number; uncertainDates: number;
-  examples: string[]; person: boolean; store: boolean;
+  examples: string[]; person: boolean; store: boolean; noExtraDecimals?: boolean;
 }
 export interface Analysis { rules: ColumnRule[]; rows: number; cells: number; sheets: number; fakeBlanks: number; warnings: string[]; }
 export interface Mapping { domain: string; original: string; masked: string; }
 export interface Dictionary { version: 1; batch: string; sourceName: string; created: string; mappings: Mapping[]; sheets: { original: string; masked: string }[]; }
 export interface MaskResult { zip: Uint8Array; filename: string; workbook: Uint8Array; dictionary: Uint8Array; workbookName: string; dictionaryName: string; stats: Stats; }
 export interface Stats { masked: number; unique: number; rounded: number; dates: number; blanks: number; uncertainDates: number; metadataParts: number; }
-export const TOKEN_SOURCE = 'DM[0-9A-F]{16}_C[0-9A-F]{4}_V[0-9A-F]{6}Z';
-const tokenPattern = (): RegExp => new RegExp(TOKEN_SOURCE, 'g');
-const reservedPattern = (): RegExp => /DM[0-9A-F]{16}_C/g;
+export const TOKEN_SOURCE = '(?:人\\d+|[A-Z]+\\d+.*)';
 const blankPattern = /^[\s\u200b-\u200d\u2060\ufeff]*$/u;
 export const isBlank = (value: Value): boolean => value === null || (typeof value === 'string' && blankPattern.test(value));
 export const normalizeHeader = (value: Value): string => String(value ?? '').normalize('NFKC').trim();
@@ -63,7 +61,12 @@ export function analyze(book: Book): Analysis {
   const rules: ColumnRule[] = [];
   const warnings: string[] = [];
   let rows = 0, fakeBlanks = 0, totalCells = 0;
-  for (const [si, sheet] of book.sheets.entries()) {
+  const totalWorkbookSheets = elements(book.workbook, 'sheet').length;
+  if (totalWorkbookSheets > 1) {
+    warnings.push(`检测到工作簿包含 ${totalWorkbookSheets} 个工作表，默认仅处理第 1 个工作表「${book.sheets[0]?.name ?? '工作表1'}」。`);
+  }
+  const targetSheets = book.sheets.slice(0, 1);
+  for (const [si, sheet] of targetSheets.entries()) {
     totalCells += sheet.cells.length;
     if (!sheet.maxRow) continue;
     const nonempty = sheet.cells.filter((cell) => !isBlank(cell.value));
@@ -82,6 +85,7 @@ export function analyze(book: Book): Analysis {
       const values = groups.get(col) ?? [];
       const header = headers.get(col) ?? '';
       let texts = 0, numbers = 0, dates = 0, bools = 0, blanks = 0, count = 0, uncertain = 0;
+      let positiveCount = 0, nonNegativeCount = 0, integerCount = 0, numericCount = 0;
       const examples: string[] = [];
       const person = isPerson(header), store = header === '店铺';
       const identifier = isIdentifier(header) || person || store;
@@ -91,27 +95,47 @@ export function analyze(book: Book): Analysis {
         count++;
         if (examples.length < 3 && !examples.includes(String(value))) examples.push(String(value).slice(0, 70));
         if (cell.date) { dates++; continue; }
-        if (typeof value === 'number') numbers++;
-        else if (typeof value === 'boolean') bools++;
-        else if (typeof value === 'string' && !identifier && parseDate(value, book.date1904, isDateHeader(header))) dates++;
-        else if (typeof value === 'string' && !identifier && !isDateHeader(header) && numericText(value) !== null) numbers++;
-        else { texts++; if (isDateHeader(header) && typeof value === 'string') uncertain++; }
+        let num: number | null = null;
+        if (typeof value === 'number') {
+          numbers++;
+          num = value;
+        } else if (typeof value === 'boolean') {
+          bools++;
+        } else if (typeof value === 'string' && !identifier && parseDate(value, book.date1904, isDateHeader(header))) {
+          dates++;
+        } else if (typeof value === 'string' && !identifier && !isDateHeader(header) && numericText(value) !== null) {
+          numbers++;
+          num = numericText(value);
+        } else {
+          texts++;
+          if (isDateHeader(header) && typeof value === 'string') uncertain++;
+        }
+        if (num !== null) {
+          numericCount++;
+          if (num > 0) positiveCount++;
+          if (num >= 0) nonNegativeCount++;
+          if (Number.isInteger(num)) integerCount++;
+        }
       }
+      const allPositive = numericCount > 0 && positiveCount === numericCount;
+      const allNonNegative = numericCount > 0 && nonNegativeCount === numericCount;
+      const allIntegers = numericCount > 0 && integerCount === numericCount;
+      const noExtraDecimals = numericCount > 0 && (allPositive || (allNonNegative && allIntegers) || allIntegers);
       let type: string, mode: Mode, reason: string;
       if (isDateHeader(header) || (dates > 0 && dates === count)) { type = '日期'; mode = 'date'; reason = '日期列不脱敏；只转换明确有效的文本日期'; }
-      else if (person || store) { type = person ? '人名' : '店铺'; mode = 'mask'; reason = person ? '销售员* / IPD / GTM 共用人名映射' : '完整原值去重，保留末尾 3 个字符'; }
+      else if (person || store) { type = person ? '人名' : '店铺'; mode = 'mask'; reason = person ? '销售员* / IPD / GTM 共用「人1、人2…」' : '完整原值去重，保留列号与末尾 3 个字符'; }
       else if (!count) { type = '空列'; mode = 'keep'; reason = '空白不参与脱敏'; }
-      else if (numbers === count) { type = '数值'; mode = 'keep'; reason = '数值不脱敏，底层数值四舍五入到 2 位'; }
+      else if (numbers === count) { type = '数值'; mode = 'keep'; reason = noExtraDecimals ? '全列均为正数/整数，不额外添加 2 位小数' : '数值不脱敏，底层数值四舍五入到 2 位'; }
       else if (bools === count) { type = '布尔'; mode = 'keep'; reason = '保留布尔值'; }
-      else { type = texts === count ? (identifier ? '标识文本' : '文本') : '混合'; mode = 'mask'; reason = identifier ? '按文本标识处理，保留前导零和完整原值映射' : '替换非空文本，数值与真实日期保持各自规则'; }
+      else { type = texts === count ? (identifier ? '标识文本' : '文本') : '混合'; mode = 'mask'; reason = identifier ? '按文本标识处理，脱敏为友好短编码' : '替换非空文本，数值与真实日期保持各自规则'; }
       if (!header && count) warnings.push(`${sheet.name}!${columnName(col)} 无表头，默认对非空文本脱敏。`);
       if (uncertain) warnings.push(`${sheet.name}!${columnName(col)} 有 ${uncertain} 个不明确或无效的文本日期，将保留原样。`);
       fakeBlanks += blanks;
-      rules.push({ key: `${si}:${col}`, sheet: sheet.name, col, letter: columnName(col), header, type, mode, reason, nonEmpty: count, fakeBlanks: blanks, uncertainDates: uncertain, examples, person, store });
+      rules.push({ key: `${si}:${col}`, sheet: sheet.name, col, letter: columnName(col), header, type, mode, reason, nonEmpty: count, fakeBlanks: blanks, uncertainDates: uncertain, examples, person, store, noExtraDecimals });
     }
   }
   check(rows > 0, '工作簿只有表头或空白，没有可处理的数据行。');
-  return { rules, rows, cells: totalCells, sheets: book.sheets.length, fakeBlanks, warnings };
+  return { rules, rows, cells: totalCells, sheets: 1, fakeBlanks, warnings };
 }
 export function timestamp(date = new Date()): string {
   const pad = (value: number, length = 2): string => String(value).padStart(length, '0');
@@ -123,7 +147,8 @@ export function outputName(original: string, action: string, extension: string, 
 }
 
 export async function maskWorkbook(bytes: Uint8Array, sourceName: string, overrides: Record<string, Mode> = {}, now = new Date()): Promise<MaskResult> {
-  const book = readBook(bytes);
+  const book = readBook(bytes, true);
+  isolateFirstSheet(book);
   check(!getBatch(book), '工作簿已有脱敏批次标记，请使用原始文件，避免重复脱敏。');
   const analysis = analyze(book);
   const ruleMap = new Map(analysis.rules.map((rule) => [rule.key, rule]));
@@ -136,58 +161,126 @@ export async function maskWorkbook(bytes: Uint8Array, sourceName: string, overri
   }
   const batch = Array.from(crypto.getRandomValues(new Uint8Array(8))).map((n) => n.toString(16).padStart(2, '0')).join('').toUpperCase();
   const mappings: Mapping[] = [];
-  const domains = new Map<string, Map<string, string>>();
-  const domainIds = new Map<string, number>();
-  const originals = new Set(book.sheets.flatMap((sheet) => sheet.cells.filter((cell) => typeof cell.value === 'string').map((cell) => cell.value as string)));
-  for (const original of originals) check(!reservedPattern().test(original), '检测到已有脱敏编码，请先恢复或使用原始工作簿，避免重复脱敏。');
+
+  const originalStrings = new Set<string>();
+  for (const cell of book.sheets[0]!.cells) {
+    if (typeof cell.value === 'string') {
+      originalStrings.add(cell.value);
+      originalStrings.add(cell.value.trim());
+    }
+  }
+
   const uniqueTokens = new Set<string>();
+  const personMap = new Map<string, string>();
+  let personSeq = 1;
+  const colSeq = new Map<number, number>();
+  const domains = new Map<string, Map<string, string>>();
+
   const stats: Stats = { masked: 0, unique: 0, rounded: 0, dates: 0, blanks: 0, uncertainDates: 0, metadataParts: 0 };
   const styles = new StyleBuilder(book.styles);
-  const sheetNames = book.sheets.map((sheet, i) => ({ original: sheet.name, masked: `工作表${i + 1}` }));
-  for (const [si, sheet] of book.sheets.entries()) {
-    sheet.node.setAttribute('name', sheetNames[si]!.masked);
-    for (const cell of sheet.cells) {
-      const original = cell.value;
-      if (cell.row === 1) { if (typeof original === 'string') { if (isBlank(original)) { writeCell(cell, null); stats.blanks++; } else writeCell(cell, original); } continue; }
-      const rule = ruleMap.get(`${si}:${cell.col}`);
-      if (isBlank(original)) { if (typeof original === 'string') { writeCell(cell, null); stats.blanks++; } continue; }
-      check(rule, '数据列缺少识别策略。');
-      if (['e', 'd'].includes(cell.node.getAttribute('t') ?? '')) continue;
-      if (cell.date && typeof original === 'number') continue;
-      if (typeof original === 'boolean') continue;
-      if (rule.mode === 'date') {
-        if (typeof original === 'string') {
-          const parsed = parseDate(original, book.date1904, true);
-          if (parsed) { writeCell(cell, parsed.serial, styles.format(cell.style, parsed.format)); stats.dates++; }
-          else { writeCell(cell, original); stats.uncertainDates++; }
-        }
-        continue;
+  const originalSheetName = book.sheets[0]!.name;
+  const sheetNames = [{ original: originalSheetName, masked: '工作表1' }];
+
+  const sheet = book.sheets[0]!;
+  sheet.node.setAttribute('name', '工作表1');
+  const si = 0;
+  for (const cell of sheet.cells) {
+    const original = cell.value;
+    if (cell.row === 1) {
+      if (typeof original === 'string') {
+        if (isBlank(original)) { writeCell(cell, null); stats.blanks++; }
+        else writeCell(cell, original);
       }
-      if (typeof original === 'number') {
-        const rounded = roundTwo(original);
-        if (rounded !== original) { writeCell(cell, rounded, styles.format(cell.style, styles.numericFormat(cell.style))); stats.rounded++; }
-        continue;
-      }
-      check(typeof original === 'string', '未识别的单元格类型。');
-      if (cell.date) { const parsed = parseDate(original, book.date1904); if (parsed) { writeCell(cell, parsed.serial, styles.format(cell.style, parsed.format)); stats.dates++; } else writeCell(cell, original); continue; }
-      // Mixed numeric/text columns preserve actual numbers. String identifiers remain identifiers.
-      if (rule.type === '数值' && rule.mode === 'keep') {
-        const number = numericText(original);
-        if (number !== null) { const rounded = roundTwo(number); writeCell(cell, rounded, styles.format(cell.style, styles.numericFormat(cell.style))); if (number !== rounded) stats.rounded++; continue; }
-      }
-      if (rule.mode === 'keep') { writeCell(cell, original); continue; }
-      const domain = rule.person ? '人员共用' : `${si + 1}:${rule.letter}:${rule.header}`;
-      let values = domains.get(domain);
-      if (!values) { values = new Map(); domains.set(domain, values); domainIds.set(domain, domains.size); }
-      let token = values.get(original);
-      if (!token) {
-        const suffix = rule.store ? [...original].slice(-3).join('') : '';
-        token = `DM${batch}_C${domainIds.get(domain)!.toString(16).padStart(4, '0').toUpperCase()}_V${(values.size + 1).toString(16).padStart(6, '0').toUpperCase()}Z${suffix}`;
-        check(!uniqueTokens.has(token) && !originals.has(token), '编码发生冲突，请重新执行。');
-        values.set(original, token); uniqueTokens.add(token); mappings.push({ domain, original, masked: token });
-      }
-      writeCell(cell, token); stats.masked++;
+      continue;
     }
+    const rule = ruleMap.get(`${si}:${cell.col}`);
+    if (isBlank(original)) { if (typeof original === 'string') { writeCell(cell, null); stats.blanks++; } continue; }
+    check(rule, '数据列缺少识别策略。');
+    if (['e', 'd'].includes(cell.node.getAttribute('t') ?? '')) continue;
+    if (cell.date && typeof original === 'number') continue;
+    if (typeof original === 'boolean') continue;
+    if (rule.mode === 'date') {
+      if (typeof original === 'string') {
+        const parsed = parseDate(original, book.date1904, true);
+        if (parsed) { writeCell(cell, parsed.serial, styles.format(cell.style, parsed.format)); stats.dates++; }
+        else { writeCell(cell, original); stats.uncertainDates++; }
+      }
+      continue;
+    }
+    if (typeof original === 'number') {
+      const rounded = roundTwo(original);
+      if (rounded !== original) {
+        const fmt = styles.numericFormat(cell.style);
+        if (rule?.noExtraDecimals && fmt === '0.00') {
+          writeCell(cell, rounded);
+        } else {
+          writeCell(cell, rounded, styles.format(cell.style, fmt));
+        }
+        stats.rounded++;
+      }
+      continue;
+    }
+    check(typeof original === 'string', '未识别的单元格类型。');
+    if (cell.date) { const parsed = parseDate(original, book.date1904); if (parsed) { writeCell(cell, parsed.serial, styles.format(cell.style, parsed.format)); stats.dates++; } else writeCell(cell, original); continue; }
+    if (rule.type === '数值' && rule.mode === 'keep') {
+      const number = numericText(original);
+      if (number !== null) {
+        const rounded = roundTwo(number);
+        const fmt = styles.numericFormat(cell.style);
+        if (rule?.noExtraDecimals && fmt === '0.00') {
+          writeCell(cell, rounded);
+        } else {
+          writeCell(cell, rounded, styles.format(cell.style, fmt));
+        }
+        if (number !== rounded) stats.rounded++;
+        continue;
+      }
+    }
+    if (rule.mode === 'keep') { writeCell(cell, original); continue; }
+
+    const domain = rule.person ? '人员共用' : `${rule.letter}:${rule.header}`;
+    let values = domains.get(domain);
+    if (!values) { values = new Map(); domains.set(domain, values); }
+    let token = values.get(original);
+    if (!token) {
+      if (rule.person) {
+        token = personMap.get(original);
+        if (!token) {
+          while (true) {
+            const candidate = `人${personSeq++}`;
+            if (!originalStrings.has(candidate) && !uniqueTokens.has(candidate)) {
+              token = candidate;
+              break;
+            }
+          }
+          personMap.set(original, token);
+        }
+      } else if (rule.store) {
+        let seq = colSeq.get(rule.col) ?? 1;
+        const suffix = [...original].slice(-3).join('');
+        let candidate = `${rule.letter}${seq}${suffix}`;
+        while (originalStrings.has(candidate) || uniqueTokens.has(candidate)) {
+          seq++;
+          candidate = `${rule.letter}${seq}${suffix}`;
+        }
+        colSeq.set(rule.col, seq + 1);
+        token = candidate;
+      } else {
+        let seq = colSeq.get(rule.col) ?? 1;
+        let candidate = `${rule.letter}${seq}`;
+        while (originalStrings.has(candidate) || uniqueTokens.has(candidate)) {
+          seq++;
+          candidate = `${rule.letter}${seq}`;
+        }
+        colSeq.set(rule.col, seq + 1);
+        token = candidate;
+      }
+      values.set(original, token);
+      uniqueTokens.add(token);
+      mappings.push({ domain, original, masked: token });
+    }
+    writeCell(cell, token);
+    stats.masked++;
   }
   stats.unique = mappings.length;
   stats.metadataParts = sanitize(book);
@@ -238,11 +331,9 @@ export async function readDictionary(bytes: Uint8Array): Promise<Dictionary> {
   const seenTokens = new Set<string>(), seenOriginals = new Set<string>();
   const mappings: Mapping[] = table(book, '映射字典', mappingHeaders).map((row) => {
     const [domain, original, masked] = row;
-    check(typeof domain === 'string' && typeof original === 'string' && typeof masked === 'string' && !isBlank(original), '字典包含空白或非文本映射。');
-    check(new RegExp(`^DM${batch}_C[0-9A-F]{4}_V[0-9A-F]{6}Z`).test(masked), '字典中存在其他批次或无效编码。');
-    const core = masked.match(new RegExp(TOKEN_SOURCE))![0];
-    check(!seenTokens.has(core) && !seenOriginals.has(JSON.stringify([domain, original])), '字典存在重复或冲突映射。');
-    seenTokens.add(core); seenOriginals.add(JSON.stringify([domain, original]));
+    check(typeof domain === 'string' && typeof original === 'string' && typeof masked === 'string' && !isBlank(original) && !isBlank(masked), '字典包含空白或非文本映射。');
+    check(!seenTokens.has(masked) && !seenOriginals.has(JSON.stringify([domain, original])), '字典存在重复或冲突映射。');
+    seenTokens.add(masked); seenOriginals.add(JSON.stringify([domain, original]));
     return { domain, original, masked };
   });
   const sheets = table(book, '工作表对应', sheetHeaders).map((row) => {
@@ -256,41 +347,99 @@ export async function readDictionary(bytes: Uint8Array): Promise<Dictionary> {
   return dict;
 }
 
-export function createReplacer(dict: Dictionary): { replace: (text: string) => string; matched: () => number } {
-  const mapping = new Map(dict.mappings.map((item) => [item.masked.match(new RegExp(TOKEN_SOURCE))![0], item]));
+function buildTokenRegex(token: string): string {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (token.startsWith('人')) {
+    return `(?<![a-zA-Z0-9_\\u4e00-\\u9fa5])${escaped}(?![a-zA-Z0-9_\\u4e00-\\u9fa5])`;
+  }
+  return `(?<![a-zA-Z0-9_])${escaped}(?![a-zA-Z0-9_])`;
+}
+
+export function createReplacer(dict: Dictionary): {
+  replace: (text: string) => string;
+  matched: () => number;
+  hasTokens: (text: string) => boolean;
+} {
+  const sortedMappings = [...dict.mappings].sort((a, b) => b.masked.length - a.masked.length);
+  const mapping = new Map(sortedMappings.map((item) => [item.masked, item]));
   let matches = 0;
+  if (sortedMappings.length === 0) {
+    return {
+      matched: () => 0,
+      hasTokens: () => false,
+      replace: (text: string) => text,
+    };
+  }
+  const pattern = sortedMappings.map((item) => buildTokenRegex(item.masked)).join('|');
+  const regex = new RegExp(pattern, 'gu');
+
+  const storeRules = dict.mappings
+    .filter((m) => m.domain.endsWith(':店铺') || m.domain === '店铺')
+    .map((m) => {
+      const suffix = [...m.original].slice(-3).join('');
+      const prefix = m.masked.slice(0, m.masked.length - suffix.length);
+      return { prefix, masked: m.masked, original: m.original };
+    });
+
   return {
     matched: () => matches,
+    hasTokens: (text: string) => new RegExp(pattern, 'u').test(text),
     replace: (text: string): string => {
-      const edits: { start: number; end: number; value: string }[] = [];
-      for (const match of text.matchAll(tokenPattern())) {
-        const item = mapping.get(match[0]);
-        check(item, '发现未知脱敏编码；字典不匹配或内容混用了其他批次。');
-        check(text.slice(match.index, match.index + item.masked.length) === item.masked, '脱敏编码或店铺末尾字符已被修改，无法可靠恢复。');
-        edits.push({ start: match.index, end: match.index + item.masked.length, value: item.original }); matches++;
+      for (const sr of storeRules) {
+        const prefixRegex = new RegExp(`(?<![a-zA-Z0-9_])${sr.prefix.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}(?![a-zA-Z0-9_])`, 'gu');
+        for (const match of text.matchAll(prefixRegex)) {
+          const actual = text.slice(match.index, match.index + sr.masked.length);
+          check(actual === sr.masked, '脱敏编码或店铺末尾字符已被修改，无法可靠恢复。');
+        }
       }
-      check([...text.matchAll(reservedPattern())].length === edits.length, '检测到残缺或被改写的脱敏编码，无法完整恢复。');
-      let result = text;
-      for (const edit of edits.reverse()) result = result.slice(0, edit.start) + edit.value + result.slice(edit.end);
-      return result;
+      return text.replace(regex, (match) => {
+        const item = mapping.get(match);
+        if (item) {
+          matches++;
+          return item.original;
+        }
+        return match;
+      });
     },
   };
 }
+
 export async function restoreWorkbook(bytes: Uint8Array, dictionaryBytes: Uint8Array, sourceName: string, now = new Date()): Promise<{ bytes: Uint8Array; filename: string; restored: number }> {
   const dict = await readDictionary(dictionaryBytes);
   const book = readBook(bytes);
   const batch = getBatch(book);
   check(batch === null || batch === dict.batch, '工作簿与字典的批次不匹配。');
   const mapping = new Map(dict.mappings.map((item) => [item.masked, item.original]));
+  const storeRules = dict.mappings
+    .filter((m) => m.domain.endsWith(':店铺') || m.domain === '店铺')
+    .map((m) => {
+      const suffix = [...m.original].slice(-3).join('');
+      const prefix = m.masked.slice(0, m.masked.length - suffix.length);
+      return { prefix, masked: m.masked, original: m.original };
+    });
   const replacer = createReplacer(dict);
   let restored = 0;
   for (const sheet of book.sheets) {
     for (const cell of sheet.cells) {
       if (typeof cell.value !== 'string' || ['e', 'd'].includes(cell.node.getAttribute('t') ?? '')) continue;
-      if (cell.row === 1) { check(!reservedPattern().test(cell.value), '首行表头包含脱敏编码，请保留原始表头并将数据放在第 2 行之后。'); continue; }
+      if (cell.row === 1) continue;
       const original = mapping.get(cell.value);
-      if (original !== undefined) { writeCell(cell, original); restored++; }
-      else { replacer.replace(cell.value); check(!new RegExp(TOKEN_SOURCE).test(cell.value), '工作簿脱敏值必须完整匹配，检测到拼接或改动的单元格。'); }
+      if (original !== undefined) {
+        writeCell(cell, original);
+        restored++;
+      } else {
+        for (const sr of storeRules) {
+          if (cell.value.startsWith(sr.prefix) && cell.value !== sr.masked) {
+            check(false, '脱敏编码或店铺末尾字符已被修改，无法可靠恢复。');
+          }
+        }
+        if (cell.value && replacer.hasTokens(cell.value)) {
+          check(false, '工作簿脱敏值必须完整匹配，检测到拼接或改动的单元格。');
+        }
+        if (/^(?:人\d+|[A-Z]{1,3}\d+.*)$/.test(cell.value)) {
+          check(false, '发现未知脱敏编码；字典不匹配或内容混用了其他批次。');
+        }
+      }
     }
   }
   check(restored > 0 || (dict.mappings.length === 0 && batch === dict.batch), '工作簿中未找到此字典对应的脱敏值，请检查文件是否匹配。');
@@ -298,8 +447,7 @@ export async function restoreWorkbook(bytes: Uint8Array, dictionaryBytes: Uint8A
   const finalNames = book.sheets.map((sheet) => names.get(sheet.name) ?? sheet.name);
   check(new Set(finalNames.map((name) => name.toLowerCase())).size === finalNames.length, '恢复后的工作表名称冲突，请先调整新增工作表名称。');
   book.sheets.forEach((sheet, index) => sheet.node.setAttribute('name', finalNames[index]!));
-  // Inline every string so a workbook re-saved by Excel cannot keep stale token caches.
-  for (const sheet of book.sheets) for (const cell of sheet.cells) if (typeof cell.value === 'string' && !['e', 'd'].includes(cell.node.getAttribute('t') ?? '')) writeCell(cell, cell.value);
+  for (const sheet of book.sheets) for (const cell of sheet.cells) if (typeof cell.value === 'string' && cell.node.getAttribute('t') === 's') writeCell(cell, cell.value);
   sanitize(book);
   return { bytes: saveBook(book), filename: outputName(sourceName, '已解密', 'xlsx', timestamp(now)), restored };
 }
