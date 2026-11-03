@@ -1,6 +1,30 @@
 {
-  "generatedAt": "2026-09-11T07:15:38.515Z",
+  "generatedAt": "2026-11-03T07:17:00.988Z",
   "scripts": [
+    {
+      "id": "amazon-category-insights-json-capture",
+      "name": "Amazon 类目洞察数据采集器",
+      "version": "6.7.0",
+      "description": "采集类目表现、畅销/新品 ASIN 与产品特征趋势；逐请求验证归属、隔离异常响应、支持迟到补录及 JSON ZIP 导出。",
+      "updated": "2026-11-02",
+      "file": "amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js",
+      "match": [
+        "https://sellercentral.amazon.com/selection/category-insights*",
+        "https://sellercentral.amazon.com/next/*"
+      ]
+    },
+    {
+      "id": "amazon-category-node-mapper",
+      "name": "Amazon 类目节点映射采集器",
+      "version": "1.2.1",
+      "description": "通过 getFilters 递归采集站点/类别/商品类型/关键词节点映射；IndexedDB 断点续采、三级循环、异常报告、CSV/XLSX/JSON 导出。",
+      "updated": "2026-11-02",
+      "file": "amazon-category-node-mapper/amazon-category-node-mapper.user.js",
+      "match": [
+        "https://sellercentral.amazon.com/selection/category-insights*",
+        "https://sellercentral.amazon.com/next/*"
+      ]
+    },
     {
       "id": "amazon-signin-blocker",
       "name": "Amazon Sign-in Blocker",

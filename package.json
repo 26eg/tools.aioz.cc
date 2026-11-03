@@ -6,7 +6,7 @@
     "dev": "node scripts/serve-local.mjs",
     "build": "node scripts/build-manifest.mjs && node scripts/build-desensitizer.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-xlsx-workbook-merger.mjs && node --test scripts/test-desensitizer.mjs",
+    "test": "node scripts/test-xlsx-workbook-merger.mjs && node --test scripts/test-desensitizer.mjs scripts/test-build-manifest.mjs",
     "test:sample": "node scripts/test-desensitizer-sample.mjs",
     "test:browser": "node scripts/test-desensitizer-browser.mjs"
   },
