@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-11-03T07:17:00.988Z",
+  "generatedAt": "2026-11-04T07:19:58.669Z",
   "scripts": [
     {
       "id": "amazon-category-insights-json-capture",
       "name": "Amazon 类目洞察数据采集器",
-      "version": "6.7.0",
-      "description": "采集类目表现、畅销/新品 ASIN 与产品特征趋势；逐请求验证归属、隔离异常响应、支持迟到补录及 JSON ZIP 导出。",
-      "updated": "2026-11-02",
+      "version": "7.0.3",
+      "description": "主动请求类目洞察四类数据；四级目录遍历、15–45秒节点间隔、分批ZIP、断点续采与详细日志。",
+      "updated": "2026-11-03",
       "file": "amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js",
       "match": [
         "https://sellercentral.amazon.com/selection/category-insights*",

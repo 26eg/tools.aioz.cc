@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Amazon 类目洞察数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      6.7.0
-// @description  采集类目表现、畅销/新品 ASIN 与产品特征趋势；逐请求验证归属、隔离异常响应、支持迟到补录及 JSON ZIP 导出。
+// @version      7.0.3
+// @description  主动请求类目洞察四类数据；四级目录遍历、15–45秒节点间隔、分批ZIP、断点续采与详细日志。
 // @homepageURL  https://tools.aioz.cc/tampermonkey-scripts/
 // @updateURL    https://tools.aioz.cc/tampermonkey-scripts/amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js
 // @downloadURL  https://tools.aioz.cc/tampermonkey-scripts/amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js
@@ -13,339 +13,727 @@
 // @noframes
 // @grant        none
 // ==/UserScript==
+"use strict";
 (() => {
-  // Capture module: core.ts
-  var VERSION = "6.7.0";
-  var TYPES = ["getPerformanceDashboard", "relatedAsin_top_grossing", "relatedAsin_new_successful", "getFeaturesDashboard"];
-  var aliases = {
-    browseNode: "node",
-    browseNodeId: "node",
-    nodeId: "node",
-    bnId: "node",
-    targetMarketplaceId: "market",
-    marketplaceId: "market",
-    marketId: "market",
-    catId: "category",
-    categoryId: "category",
-    ptdId: "product",
-    productTypeId: "product",
-    relatedAsinType: "variant",
-    asinType: "variant",
-    dashboardType: "variant",
-    type: "variant"
-  };
-  var scalar = (x2) => typeof x2 === "string" && x2.trim() ? x2 : typeof x2 === "number" && Number.isSafeInteger(x2) ? String(x2) : void 0;
-  var object = (x2) => x2 !== null && typeof x2 === "object" && !Array.isArray(x2);
-  function evidence(value) {
-    const out = { node: [], market: [], category: [], product: [], variant: [], invalid: false };
-    let count = 0;
-    function add(key, v) {
-      const bucket = aliases[key];
-      if (!bucket) return;
-      const s = scalar(v);
-      if (s !== void 0) {
-        if (!out[bucket].includes(s)) out[bucket].push(s);
-      } else if (v !== null && v !== void 0) out.invalid = true;
-    }
-    function visit(v, depth) {
-      if (++count > 1e4 || depth > 16) {
-        out.invalid = true;
-        return;
-      }
-      if (Array.isArray(v)) {
-        for (const x2 of v) visit(x2, depth + 1);
-        return;
-      }
-      if (!object(v)) return;
-      if (typeof v.key === "string" && "value" in v) add(v.key, v.value);
-      for (const [k, x2] of Object.entries(v)) {
-        if (aliases[k]) add(k, x2);
-        if (["filter", "filters", "request", "parameters", "params", "context", "metadata"].includes(k)) visit(x2, depth + 1);
-      }
-    }
-    visit(value, 0);
-    return out;
+
+  var VERSION = "7.0.3";
+  var FILTER_API = "/next/v2/getFilters";
+  var KINDS = ["getPerformanceDashboard", "getFeaturesDashboard", "relatedAsin_top_grossing", "relatedAsin_new_successful"];
+  var LABELS = { getPerformanceDashboard: "\u6240\u6709ASIN", getFeaturesDashboard: "\u4EA7\u54C1\u7279\u5F81\u8D8B\u52BF", relatedAsin_top_grossing: "\u6700\u7545\u9500ASIN", relatedAsin_new_successful: "\u65B0\u53D1\u5E03ASIN" };
+  var LEVELS = ["keyword", "ptype", "category", "store"];
+  var FILTER_NAMES = { store: "sgar-tmp-filter", category: "sgar-cat-filter", ptype: "sgar-pdt-filter", keyword: "sgar-bn-filter" };
+  var DEFAULTS = { target: 50, totalLimit: 0, delayMin: 15, delayMax: 45, levels: { keyword: true, ptype: false, category: false, store: false } };
+  var iso = () => (/* @__PURE__ */ new Date()).toISOString();
+  var stamp = () => iso().replace(/[:.]/g, "-");
+  var pathOf = (c) => [c.store.value, c.category.value, c.product_type.value, c.keyword.value];
+  var pathKey = (c) => JSON.stringify(pathOf(c));
+  var contextLabel = (c) => [c.store.label, c.category.label, c.product_type.label, c.keyword.label].join(" / ");
+  var isObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  function identifier(value) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "number" && Number.isSafeInteger(value)) return String(value);
+    throw new Error("\u4EE3\u7801\u4E3A\u7A7A\u6216\u6570\u5B57\u7CBE\u5EA6\u4E0D\u5B89\u5168");
   }
-  function parseBody(body) {
-    if (body instanceof URLSearchParams) return Object.fromEntries(body);
-    if (typeof body === "string") {
-      try {
-        return JSON.parse(body);
-      } catch {
-        if (body.includes("=")) return Object.fromEntries(new URLSearchParams(body));
-      }
-      return null;
-    }
-    return object(body) ? body : null;
+  function normalizeConfig(value) {
+    const c = structuredClone(value);
+    c.target = Number.isSafeInteger(c.target) && c.target > 0 ? c.target : 50;
+    c.totalLimit = Number.isSafeInteger(c.totalLimit) && c.totalLimit >= 0 ? c.totalLimit : 0;
+    c.delayMin = Number.isFinite(c.delayMin) ? Math.max(15, c.delayMin) : 15;
+    c.delayMax = Number.isFinite(c.delayMax) ? Math.max(c.delayMin, 15, c.delayMax) : Math.max(c.delayMin, 45);
+    c.levels = { ...DEFAULTS.levels, ...c.levels, keyword: true };
+    if (c.levels.store) c.levels.category = true;
+    if (c.levels.category) c.levels.ptype = true;
+    return c;
   }
-  function pathOf(c) {
-    return [c.store.value, c.category.value, c.product_type.value, c.keyword.value];
+  var eq = (key, value) => ({ key, value, conditionalOperator: "EQUALS" });
+  function dataRequest(kind, c) {
+    const [market, cat, ptd, bn] = pathOf(c).map(identifier);
+    if (kind.startsWith("relatedAsin_")) return {
+      url: "/next/v2/relatedAsinDashboard",
+      body: { insightType: "MP_CAT_PTD_BN_SEC_INSIGHT", targetMarketplaceId: market, sourceMarketplaceId: market, sectionId: kind.slice("relatedAsin_".length), filter: { logicalOperator: "AND", filters: [eq("bnId", bn), eq("ptdId", ptd), eq("catId", cat)] } }
+    };
+    const feature = kind === "getFeaturesDashboard";
+    return { url: `/next/v2/${kind}`, body: { program: "sg_np_ar", targetMarketplaceId: market, producerId: "NEXT_SG_NP_AR_MODEL", ...feature ? { pageSize: 1e3 } : {}, filter: { logicalOperator: "AND", filters: [eq("type", feature ? "MP_CAT_PTD_BN_FEA" : "MP_CAT_PTD_BN"), eq("catId", cat), eq("ptdId", ptd), eq("bnId", bn)] } } };
   }
-  var same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-  var full = (p) => p.every(Boolean);
-  function endpoint(url) {
-    const parsed = new URL(url, "https://sellercentral.amazon.com");
-    if (parsed.origin !== "https://sellercentral.amazon.com") return "";
-    const p = parsed.pathname;
-    return ["/next/v2/getPerformanceDashboard", "/next/v2/getFeaturesDashboard", "/next/v2/relatedAsinDashboard", "/next/v2/getFilters"].includes(p) ? p.split("/").pop() : "";
-  }
-  function merge(a, b) {
-    return { node: [.../* @__PURE__ */ new Set([...a.node, ...b.node])], market: [.../* @__PURE__ */ new Set([...a.market, ...b.market])], category: [.../* @__PURE__ */ new Set([...a.category, ...b.category])], product: [.../* @__PURE__ */ new Set([...a.product, ...b.product])], variant: [.../* @__PURE__ */ new Set([...a.variant, ...b.variant])], invalid: a.invalid || b.invalid };
-  }
-  function conflict(e) {
-    return e.invalid || [e.node, e.market, e.category, e.product].some((x2) => x2.length > 1);
-  }
-  function metricEvidence(json, context) {
-    const out = evidence(null);
-    if (!object(json)) return out;
-    let count = 0;
-    function visit(value, depth = 0) {
-      if (!object(value) || depth > 5 || ++count > 3e3) return;
-      if (typeof value.id === "string") {
-        const variant = /^(top_grossing|new_successful)_/.exec(value.id)?.[1];
-        if (variant && !out.variant.includes(variant)) out.variant.push(variant);
-        const prefixes = [context.category.label, context.category.value].filter(Boolean).map((c) => `${c}_${context.product_type.value}_`);
-        for (const prefix of prefixes) if (value.id.startsWith(prefix)) {
-          const node = /^(\d+)_/.exec(value.id.slice(prefix.length))?.[1];
-          if (node && !out.node.includes(node)) out.node.push(node);
+  function classify(kind, value, c) {
+    if (!isObject(value)) throw new Error("\u54CD\u5E94\u4E0D\u662F JSON \u5BF9\u8C61");
+    const explicit = { bnId: c.keyword.value, nodeId: c.keyword.value, browseNodeId: c.keyword.value, targetMarketplaceId: c.store.value, marketplaceId: c.store.value, catId: c.category.value, ptdId: c.product_type.value };
+    for (const [key, expected] of Object.entries(explicit)) if (value[key] != null && identifier(value[key]) !== expected) throw new Error(`\u54CD\u5E94\u5F52\u5C5E\u51B2\u7A81\uFF1A${key}`);
+    if (kind.startsWith("relatedAsin_") && value.sectionId != null && value.sectionId !== kind.slice("relatedAsin_".length)) throw new Error("\u54CD\u5E94 sectionId \u51B2\u7A81");
+    function checkMetric(v, depth = 0) {
+      if (!isObject(v) || depth > 5) return;
+      if (typeof v.id === "string") {
+        for (const category of [c.category.value, c.category.label]) {
+          const prefix = `${category}_${c.product_type.value}_`;
+          if (v.id.startsWith(prefix)) {
+            const node = /^(\d+)_/.exec(v.id.slice(prefix.length))?.[1];
+            if (node && node !== c.keyword.value) throw new Error("\u6307\u6807\u8282\u70B9\u51B2\u7A81");
+          }
         }
+        const variant = /^(top_grossing|new_successful)_/.exec(v.id)?.[1];
+        if (variant && kind.startsWith("relatedAsin_") && variant !== kind.slice("relatedAsin_".length)) throw new Error("\u6307\u6807 ASIN \u7C7B\u578B\u51B2\u7A81");
       }
-      for (const [key, v] of Object.entries(value)) if (!["graphDataPointsList", "relatedASINs", "asinList"].includes(key)) visit(v, depth + 1);
+      for (const [k, x2] of Object.entries(v)) if (k !== "graphDataPointsList") checkMetric(x2, depth + 1);
     }
-    visit(json.demand);
-    visit(json.competition);
-    return out;
+    checkMetric(value.demand);
+    checkMetric(value.competition);
+    const populated = (v) => Array.isArray(v) ? v.length > 0 : isObject(v) ? Object.keys(v).length > 0 : v !== null && v !== void 0;
+    if (kind === "getFeaturesDashboard") {
+      if (value.featuresName === null && value.featuresList === null) return "empty";
+      if (!Array.isArray(value.featuresList)) throw new Error("featuresList \u7ED3\u6784\u672A\u77E5");
+      return value.featuresList.length ? "data" : "empty";
+    }
+    if (kind.startsWith("relatedAsin_")) {
+      if (!Array.isArray(value.relatedASINs)) throw new Error("relatedASINs \u7ED3\u6784\u672A\u77E5");
+      if (value.relatedASINs.length || ["demand", "competition", "aggregatedNetShippedGMS", "aggregatedUnitsSold", "additionalMetrics"].some((k) => populated(value[k]))) return "data";
+      if (!["demand", "competition", "aggregatedNetShippedGMS", "aggregatedUnitsSold", "additionalMetrics"].every((k) => k in value)) throw new Error("\u7A7A ASIN \u54CD\u5E94\u7F3A\u5C11\u660E\u786E\u7684\u65E0\u6570\u636E\u5B57\u6BB5");
+      return "empty";
+    }
+    if (!("demand" in value) || !("competition" in value)) throw new Error("\u8868\u73B0\u54CD\u5E94\u7ED3\u6784\u672A\u77E5");
+    return populated(value.demand) || populated(value.competition) ? "data" : "empty";
   }
-  var CaptureEngine = class {
-    constructor(store, log, changed = () => {
-    }, pageUrl = "") {
-      this.store = store;
-      this.log = log;
+
+  var DIRECTORY_TYPES = ["MP", "MP_CAT", "MP_CAT_PTD", "MP_CAT_PTD_BN"];
+  var directoryKey = (type, market = "", cat = "", ptd = "") => JSON.stringify([type, market, cat, ptd]);
+  function directoryPayload(type, market, cat, ptd) {
+    const filters = [{ key: "type", value: type, conditionalOperator: "EQUALS" }];
+    if (cat !== void 0) filters.push({ key: "catId", value: cat, conditionalOperator: "EQUALS" });
+    if (ptd !== void 0) filters.push({ key: "ptdId", value: ptd, conditionalOperator: "EQUALS" });
+    return { program: "sg_np_ar", producerId: "NEXT_SG_NP_AR_MODEL", pageSize: "1000", sortCriteria: [{ key: "properties.op_sc_de_co", order: "DESC" }], type, ...market !== void 0 ? { targetMarketplaceId: market } : {}, filter: { logicalOperator: "AND", filters } };
+  }
+  function options(json, type) {
+    if (!isObject(json) || json.type !== type || !Array.isArray(json.filterDataPoints)) throw new Error(`\u76EE\u5F55\u7ED3\u6784\u65E0\u6548\uFF1A${type}`);
+    const list = json.filterDataPoints;
+    if (json.hasMore === true || json.nextToken || json.nextPageToken || Number(json.totalCount) > list.length) throw new Error("\u76EE\u5F55\u660E\u786E\u5B58\u5728\u672A\u5904\u7406\u5206\u9875\uFF0C\u505C\u6B62\u4EE5\u907F\u514D\u6F0F\u91C7");
+    if (list.length > 1e5) throw new Error("\u76EE\u5F55\u8D85\u51FA\u4FDD\u62A4\u9608\u503C");
+    const seen = /* @__PURE__ */ new Set();
+    return list.map((x2, i2) => {
+      if (!isObject(x2) || typeof x2.label !== "string") throw new Error("\u76EE\u5F55 label \u65E0\u6548");
+      const value = identifier(x2.value);
+      if (seen.has(value)) throw new Error("\u76EE\u5F55\u5B58\u5728\u91CD\u590D\u4EE3\u7801");
+      seen.add(value);
+      return { value, label: x2.label.replace(/\s+/g, " ").trim(), index: i2 + 1, total: list.length };
+    });
+  }
+  var DirectoryCache = class {
+    constructor(log2, changed = () => {
+    }) {
+      this.log = log2;
       this.changed = changed;
-      this.pageUrl = pageUrl;
     }
-    store;
     log;
     changed;
-    pageUrl;
-    batches = /* @__PURE__ */ new Map();
-    quarantines = /* @__PURE__ */ new Map();
-    unsavedQuarantines = /* @__PURE__ */ new Map();
-    // Directory identity always includes all parent codes.
-    catalog = /* @__PURE__ */ new Map();
-    directorySequence = /* @__PURE__ */ new Map();
-    active = null;
-    fatal = null;
+    entries = /* @__PURE__ */ new Map();
     seq = 0;
-    transition = false;
-    queue = Promise.resolve();
-    session = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    serial(work) {
-      const next = this.queue.then(work);
-      this.queue = next.catch((e) => {
-        this.fatal = String(e);
-        this.log(`\u5B58\u50A8\u6216\u5904\u7406\u5931\u8D25\uFF0C\u505C\u6B62\u81EA\u52A8\u904D\u5386\uFF1A${this.fatal}`);
-        this.changed();
-      });
-      return this.queue;
+    put(type, market, cat, ptd, json, seq = ++this.seq) {
+      const key = directoryKey(type, market, cat, ptd);
+      const items = options(json, type);
+      if ((this.entries.get(key)?.seq || 0) > seq) return;
+      this.entries.delete(key);
+      this.entries.set(key, { items, at: Date.now(), seq });
+      if (this.entries.size > 64) this.entries.delete(this.entries.keys().next().value);
+      this.log("I", `\u76EE\u5F55\u5C31\u7EEA ${key}\uFF5C${items.length}\u9879`);
+      this.changed();
     }
-    async restore() {
-      await this.serial(async () => {
-        for (const b of await this.store.all("batches")) {
-          if (Object.keys(b.requests).length) b.timedOut = true;
-          b.requests = {};
-          if (Object.values(b.files).some((f) => !f.exported)) {
-            this.batches.set(b.key, b);
-          } else {
-            for (const f of Object.values(b.files)) delete f.text;
-            this.batches.set(b.key, b);
-          }
-        }
-        for (const q of await this.store.all("quarantine")) {
-          const { response: _, ...meta } = q;
-          this.quarantines.set(q.id, meta);
-        }
-        this.changed();
-      });
+    get(type, market = "", cat = "", ptd = "") {
+      const entry = this.entries.get(directoryKey(type, market, cat, ptd));
+      return entry && Date.now() - entry.at <= 3e5 ? structuredClone(entry.items) : void 0;
     }
-    begin(c, force = false) {
-      const path = pathOf(c);
-      if (!full(path) || this.transition || this.fatal) return;
-      const old = this.active ? this.batches.get(this.active) : void 0;
-      if (!force && old && same(old.path, path)) return old;
-      const round = `${this.session}-${++this.seq}`;
-      const key = JSON.stringify([...path, round]);
-      const b = { key, path, nodeId: path[3], ctx: structuredClone(c), round, createdAt: Date.now(), updatedAt: Date.now(), files: {}, requests: {}, checked: false, pageUrl: this.pageUrl };
-      this.batches.set(key, b);
-      this.active = key;
-      void this.serial(async () => {
-        await this.store.put("batches", b);
-        this.changed();
-      });
-      return b;
-    }
-    reserve() {
-      return { seq: ++this.seq, round: this.active, transition: this.transition };
-    }
-    start(url, body, c, started = Date.now(), dispatch = this.reserve()) {
-      const query = Object.fromEntries(new URL(url, "https://sellercentral.amazon.com").searchParams);
-      const e = merge(evidence(query), evidence(parseBody(body)));
-      const t = { id: `${this.session}-req-${dispatch.seq}`, seq: dispatch.seq, started, endpoint: endpoint(url), evidence: e, context: structuredClone(c), round: null };
-      if (t.endpoint === "getFilters") return t;
-      if (conflict(e) || e.node.length !== 1) t.error = "\u8BF7\u6C42\u65E0\u552F\u4E00\u3001\u6709\u6548\u7684\u8282\u70B9\u51ED\u636E";
-      if (dispatch.round !== this.active || dispatch.transition !== this.transition) t.error = "\u8BF7\u6C42\u6B63\u6587\u5F02\u6B65\u89E3\u6790\u671F\u95F4\u4E0A\u4E0B\u6587\u6539\u53D8";
-      const p = pathOf(c);
-      const requested = [e.market[0] || p[0], e.category[0] || p[1], e.product[0] || p[2], e.node[0] || ""];
-      if (!t.error && !full(requested)) t.error = "\u8BF7\u6C42\u7F3A\u5C11\u53EF\u6838\u5BF9\u7684\u5B8C\u6574\u7236\u7EA7\u8DEF\u5F84";
-      const explicit = e.market.length === 1 && e.category.length === 1 && e.product.length === 1;
-      if (!t.error && (!explicit && (this.transition || !same(requested, p)))) t.error = "\u8BF7\u6C42\u4E0E\u53D1\u8D77\u65F6\u9875\u9762\u8DEF\u5F84\u4E0D\u4E00\u81F4";
-      const list = this.catalog.get(JSON.stringify(requested.slice(0, 3)));
-      if (!t.error && list && !list.has(requested[3])) t.error = "\u8BF7\u6C42\u8282\u70B9\u4E0D\u5C5E\u4E8E\u7236\u7EA7\u76EE\u5F55";
-      if (!t.error && !explicit && !list) t.error = "\u7236\u7EA7\u76EE\u5F55\u5C1A\u672A\u9A8C\u8BC1\uFF0C\u65E0\u6CD5\u8865\u5168\u8BF7\u6C42\u8DEF\u5F84";
-      if (!t.error) {
-        const ctx = same(requested, p) ? c : {
-          store: { value: requested[0], label: requested[0] },
-          category: { value: requested[1], label: requested[1] },
-          product_type: { value: requested[2], label: requested[2] },
-          keyword: { value: requested[3], label: list?.get(requested[3]) || requested[3] },
-          nodeId: requested[3]
-        };
-        let b = [...this.batches.values()].reverse().find((x2) => same(x2.path, requested) && x2.key === this.active);
-        if (!b) {
-          if (same(requested, p) && !this.transition) b = this.begin(ctx);
-          else t.error = "\u8BF7\u6C42\u5C5E\u4E8E\u975E\u5F53\u524D\u8DEF\u5F84\u4E14\u65E0\u5DF2\u7ED1\u5B9A\u91C7\u96C6\u8F6E\u6B21";
-        }
-        if (b) {
-          t.round = b.key;
-          t.context = structuredClone(b.ctx);
-          b.requests[t.id] = started;
-          void this.serial(async () => this.store.put("batches", await this.withStoredText(b)));
-        }
-      }
-      this.log(`\u8BF7\u6C42 ${t.id}\uFF5C${t.endpoint}\uFF5C${JSON.stringify(requested)}${t.error ? `\uFF5C\u5F85\u9694\u79BB\uFF1A${t.error}` : ""}`);
-      return t;
-    }
-    directory(t, json) {
-      const body = t.evidence;
-      if (!object(json) || json.type !== "MP_CAT_PTD_BN" || !Array.isArray(json.filterDataPoints) || conflict(body)) return;
-      const parent = [body.market[0], body.category[0], body.product[0]];
-      if (!parent.every(Boolean)) return;
-      if ((this.directorySequence.get(JSON.stringify(parent)) || 0) > t.seq) return;
-      const pairs = [];
-      for (const x2 of json.filterDataPoints) {
-        if (!object(x2) || scalar(x2.value) === void 0 || typeof x2.label !== "string") return;
-        pairs.push([scalar(x2.value), x2.label]);
-      }
-      if (json.hasMore === true || json.nextToken || json.nextPageToken || Number(json.totalCount) > pairs.length) return;
-      this.catalog.set(JSON.stringify(parent), new Map(pairs));
-      this.directorySequence.set(JSON.stringify(parent), t.seq);
-      this.log(`\u5DF2\u9A8C\u8BC1\u5173\u952E\u8BCD\u76EE\u5F55 ${JSON.stringify(parent)}\uFF5C${pairs.length}\u9879`);
-    }
-    finish(t, status, raw) {
-      return this.serial(async () => {
-        const b = t.round ? this.batches.get(t.round) : void 0;
-        if (b) delete b.requests[t.id];
-        let json;
+    observe(body, json, seq) {
+      let payload = body;
+      if (typeof body === "string") {
         try {
-          json = JSON.parse(raw);
+          payload = JSON.parse(body);
         } catch {
-          json = null;
-        }
-        if (t.endpoint === "getFilters") {
-          if (status >= 200 && status < 300) this.directory(t, json);
           return;
         }
-        let reason = t.error || (status < 200 || status >= 300 ? `HTTP ${status}` : "") || (!object(json) ? "\u54CD\u5E94\u4E0D\u662F JSON \u5BF9\u8C61" : "");
-        const responseEvidence = merge(evidence(json), metricEvidence(json, t.context));
-        if (!reason && conflict(responseEvidence)) reason = "\u54CD\u5E94\u5305\u542B\u51B2\u7A81\u6216\u4E0D\u5B89\u5168\u7684\u6807\u8BC6";
-        if (!reason && b) {
-          for (const [i2, key] of ["market", "category", "product", "node"].entries()) {
-            if (responseEvidence[key].length && responseEvidence[key][0] !== b.path[i2]) reason = "\u8BF7\u6C42\u4E0E\u54CD\u5E94\u6807\u8BC6\u51B2\u7A81";
+      }
+      if (!isObject(payload) || !DIRECTORY_TYPES.includes(payload.type)) return;
+      const type = payload.type;
+      const filter = isObject(payload.filter) && Array.isArray(payload.filter.filters) ? payload.filter.filters : [];
+      const field = (key) => {
+        const matches = filter.filter((x2) => isObject(x2) && x2.key === key);
+        if (matches.length > 1) throw new Error("\u76EE\u5F55\u8BF7\u6C42\u7236\u7EA7\u91CD\u590D");
+        const v = matches[0]?.value;
+        return v == null ? "" : identifier(v);
+      };
+      const market = payload.targetMarketplaceId == null ? "" : identifier(payload.targetMarketplaceId), cat = field("catId"), ptd = field("ptdId");
+      if (type !== "MP" && !market || ["MP_CAT_PTD", "MP_CAT_PTD_BN"].includes(type) && !cat || type === "MP_CAT_PTD_BN" && !ptd) throw new Error("\u76EE\u5F55\u8BF7\u6C42\u7F3A\u5C11\u7236\u7EA7\u4EE3\u7801");
+      this.put(type, market, cat, ptd, json, seq);
+    }
+  };
+  function installFilterHooks(cache2, log2) {
+    const original = window.fetch;
+    const nativeFetch2 = (input, init) => original.call(window, input, init);
+    const target = (input) => {
+      try {
+        const u = new URL(String(input), location.href);
+        return u.origin === location.origin && u.pathname === FILTER_API;
+      } catch {
+        return false;
+      }
+    };
+    const observe = (body, raw, status, seq) => {
+      if (status < 200 || status >= 300) return;
+      try {
+        cache2.observe(body, typeof raw === "string" ? JSON.parse(raw) : raw, seq);
+      } catch (e) {
+        log2("W", `\u76EE\u5F55\u76D1\u542C\u672A\u91C7\u7528\uFF1A${String(e)}`);
+      }
+    };
+    window.fetch = function(input, init) {
+      const url = typeof input === "string" || input instanceof URL ? input : input.url;
+      if (!target(url)) return original.apply(this, [input, init]);
+      const seq = ++cache2.seq;
+      let body;
+      try {
+        const b = init && Object.hasOwn(init, "body") ? init.body : input instanceof Request ? input.clone().text() : null;
+        body = Promise.resolve(b instanceof Blob ? b.text() : b instanceof URLSearchParams ? Object.fromEntries(b) : b);
+      } catch {
+        body = Promise.resolve(null);
+      }
+      body = body.catch(() => null);
+      const result = original.apply(this, [input, init]);
+      void result.then((r) => Promise.all([body, r.clone().text()]).then(([b, raw]) => observe(b, raw, r.status, seq))).catch((e) => log2("W", `fetch \u76EE\u5F55\u76D1\u542C\u5F02\u5E38\uFF1A${String(e)}`));
+      return result;
+    };
+    const open = XMLHttpRequest.prototype.open, send = XMLHttpRequest.prototype.send;
+    const meta = /* @__PURE__ */ new WeakMap();
+    XMLHttpRequest.prototype.open = function(method, url, async = true, username, password) {
+      meta.set(this, String(url));
+      return open.call(this, method, url, async, username, password);
+    };
+    XMLHttpRequest.prototype.send = function(body) {
+      if (target(meta.get(this) || "")) {
+        const seq = ++cache2.seq;
+        this.addEventListener("load", () => {
+          try {
+            observe(body, this.responseType === "json" ? this.response : this.responseText, this.status, seq);
+          } catch (e) {
+            log2("W", `XHR \u76EE\u5F55\u76D1\u542C\u5F02\u5E38\uFF1A${String(e)}`);
           }
+        }, { once: true });
+      }
+      return send.call(this, body);
+    };
+    log2("I", "document-start\uFF1A\u56DB\u7EA7 getFilters \u76D1\u542C\u5DF2\u5B89\u88C5\uFF1B\u7B49\u5F85\u624B\u52A8\u5F00\u59CB\u4E1A\u52A1\u91C7\u96C6");
+    return nativeFetch2;
+  }
+  var remaining = (items, start2, first, label) => {
+    if (!first) return items;
+    const index = items.findIndex((x2) => x2.value === start2);
+    if (index < 0) throw new Error(`\u8D77\u70B9\u5DF2\u4E0D\u5728\u6709\u6548${label}\u76EE\u5F55\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9`);
+    return items.slice(index);
+  };
+  async function* traverse(start2, levels, get) {
+    const stores = levels.store ? remaining(await get("MP"), start2.store.value, true, "\u5546\u57CE") : [start2.store];
+    for (let si = 0; si < stores.length; si++) {
+      const store = stores[si];
+      const categories = levels.category ? remaining(await get("MP_CAT", store.value), start2.category.value, si === 0, "\u7C7B\u522B") : [start2.category];
+      for (let ci = 0; ci < categories.length; ci++) {
+        const category = categories[ci], firstCategory = si === 0 && ci === 0;
+        const types = levels.ptype ? remaining(await get("MP_CAT_PTD", store.value, category.value), start2.product_type.value, firstCategory, "\u5546\u54C1\u7C7B\u578B") : [start2.product_type];
+        for (let pi = 0; pi < types.length; pi++) {
+          const product_type = types[pi];
+          const keywords = remaining(await get("MP_CAT_PTD_BN", store.value, category.value, product_type.value), start2.keyword.value, firstCategory && pi === 0, "\u5173\u952E\u8BCD");
+          for (const keyword of keywords) yield { store, category, product_type, keyword, nodeId: keyword.value };
         }
-        let kind;
-        if (t.endpoint === "getPerformanceDashboard") kind = "getPerformanceDashboard";
-        if (t.endpoint === "getFeaturesDashboard") kind = "getFeaturesDashboard";
-        if (t.endpoint === "relatedAsinDashboard") {
-          const variants = new Set([...t.evidence.variant, ...responseEvidence.variant].filter((x2) => ["top_grossing", "new_successful"].includes(x2)));
-          if (variants.size === 1) kind = `relatedAsin_${[...variants][0]}`;
-          else reason ||= "\u5173\u8054 ASIN \u7C7B\u578B\u4E0D\u660E\u786E\u6216\u51B2\u7A81";
-        }
-        if (!reason && object(json)) {
-          if (kind === "getFeaturesDashboard" && !Array.isArray(json.featuresList)) reason = "\u7279\u5F81\u54CD\u5E94\u7ED3\u6784\u65E0\u6548";
-          if (kind?.startsWith("relatedAsin_") && !Array.isArray(json.relatedASINs) && !Array.isArray(json.asinList)) reason = "ASIN \u54CD\u5E94\u7ED3\u6784\u65E0\u6548";
-          if (kind === "getPerformanceDashboard" && !object(json.demand) && !Array.isArray(json.demand) && !object(json.competition) && !Array.isArray(json.competition) && !Array.isArray(json.relatedASINs)) reason = "\u8868\u73B0\u54CD\u5E94\u7ED3\u6784\u65E0\u6548";
-        }
-        if (!b || !kind) reason ||= "\u6CA1\u6709\u5DF2\u7ED1\u5B9A\u7684\u91C7\u96C6\u8F6E\u6B21\u6216\u54CD\u5E94\u7C7B\u578B";
-        if (reason) {
-          const q = { id: t.id, reason, request: t, status, response: raw, createdAt: Date.now() };
-          const { response: _, ...meta } = q;
-          this.quarantines.set(q.id, meta);
-          this.unsavedQuarantines.set(q.id, q);
-          await this.store.put("quarantine", q);
-          this.unsavedQuarantines.delete(q.id);
-          this.log(`\u9694\u79BB ${t.id}\uFF5C${reason}`);
-        } else if (b && kind) {
-          const prior = b.files[kind];
-          if (!prior || prior.seq < t.seq) {
-            if (b.exportId) b.supplementOf ||= b.exportId;
-            b.files[kind] = { requestId: t.id, seq: t.seq, name: `${b.nodeId}\u4E28${kind}\u4E28${new Date(t.started).toISOString().replace(/[:.]/g, "-")}.json`, text: raw, exported: false };
-            b.updatedAt = Date.now();
-            this.log(`\u5DF2\u5F52\u5165 ${b.nodeId}\uFF5C${kind}${b.supplementOf ? "\uFF5C\u8865\u5145\u5305\u5F85\u5BFC\u51FA" : ""}`);
-          } else this.log(`\u5FFD\u7565\u65E7\u8BF7\u6C42\u8986\u76D6 ${t.id}`);
-        }
-        if (b) await this.store.put("batches", await this.withStoredText(b));
-        this.changed();
+      }
+    }
+  }
+
+  var DB_NAME = "amz_category_insights_capture_v1";
+  var BrowserStore = class {
+    db;
+    constructor() {
+      this.db = new Promise((resolve, reject) => {
+        const r = indexedDB.open(DB_NAME, 2);
+        r.onupgradeneeded = () => {
+          for (const [name, keyPath] of [["batches", "key"], ["quarantine", "id"], ["tasks", "key"]]) if (!r.result.objectStoreNames.contains(name)) r.result.createObjectStore(name, { keyPath });
+        };
+        r.onsuccess = () => {
+          r.result.onversionchange = () => r.result.close();
+          resolve(r.result);
+        };
+        r.onerror = () => reject(r.error);
+        r.onblocked = () => reject(new Error("\u6570\u636E\u5E93\u5347\u7EA7\u88AB\u5176\u4ED6\u9875\u9762\u963B\u585E\uFF0C\u8BF7\u5173\u95ED\u65E7\u7248\u91C7\u96C6\u9875\u9762"));
       });
     }
-    async withStoredText(b) {
+    async get(table, key) {
+      const db = await this.db;
+      return new Promise((resolve, reject) => {
+        const r = db.transaction(table).objectStore(table).get(key);
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+    }
+    async all(table) {
+      const db = await this.db;
+      return new Promise((resolve, reject) => {
+        const values = [], tx = db.transaction(table), r = tx.objectStore(table).openCursor();
+        r.onsuccess = () => {
+          const cursor = r.result;
+          if (!cursor) return;
+          const value = cursor.value;
+          if (table === "batches") {
+            for (const f of Object.values(value.files || {})) if (f.exported) delete f.text;
+          }
+          values.push(value);
+          cursor.continue();
+        };
+        tx.oncomplete = () => resolve(values);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    }
+    async write(ops) {
+      if (!ops.length) return;
+      const db = await this.db;
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction([...new Set(ops.map((x2) => x2.table))], "readwrite");
+        for (const op of ops) {
+          const store = tx.objectStore(op.table);
+          if ("clear" in op) store.clear();
+          else if ("delete" in op) store.delete(op.key);
+          else store.put(structuredClone(op.value));
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error("\u4FDD\u5B58\u4E8B\u52A1\u4E2D\u65AD"));
+      });
+    }
+  };
+
+  var Stopped = class extends Error {
+  };
+  var RateLimited = class extends Error {
+  };
+  var AuthError = class extends Error {
+  };
+  function wait(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        reject(new Stopped("\u5DF2\u7EC8\u6B62"));
+        return;
+      }
+      const abort = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        reject(new Stopped("\u5DF2\u7EC8\u6B62"));
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }, ms);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+  }
+  function retryAfter(value, now = Date.now()) {
+    if (!value) return 0;
+    const numeric = Number(value), result = Number.isFinite(numeric) ? numeric * 1e3 : Date.parse(value) - now;
+    return Number.isFinite(result) ? Math.max(0, result) : 0;
+  }
+  var Collector = class {
+    constructor(store, cache2, fetcher, log2, changed = () => {
+    }, runtime = {}) {
+      this.store = store;
+      this.cache = cache2;
+      this.fetcher = fetcher;
+      this.log = log2;
+      this.changed = changed;
+      this.rt = { now: Date.now, random: Math.random, wait, timeout: 6e4, retries: 3, ...runtime };
+    }
+    store;
+    cache;
+    fetcher;
+    log;
+    changed;
+    batches = /* @__PURE__ */ new Map();
+    deleted = /* @__PURE__ */ new Set();
+    task = null;
+    running = false;
+    fatal = null;
+    controller = new AbortController();
+    requests = 0;
+    queue = Promise.resolve();
+    exporter = async () => false;
+    rt;
+    serial(work) {
+      const next = this.queue.then(work);
+      this.queue = next.catch(() => {
+      });
+      return next;
+    }
+    async write(ops) {
+      try {
+        await this.store.write(ops);
+      } catch (e) {
+        this.fatal = String(e);
+        if (this.task) {
+          this.task.status = "storage-error";
+          this.task.reason = this.fatal;
+        }
+        this.controller.abort();
+        this.log("E", `\u4FDD\u5B58\u5931\u8D25\uFF0C\u5DF2\u505C\u6B62\u65B0\u8BF7\u6C42\uFF1B\u8BF7\u5148\u4E0B\u8F7D\u5185\u5B58\u6570\u636E\u518D\u5237\u65B0\uFF1A${String(e)}`);
+        this.changed();
+        throw e;
+      }
+    }
+    async restore() {
+      this.task = await this.store.get("tasks", "active") || null;
+      const cleanup = [{ table: "quarantine", clear: true }];
+      for (const b of await this.store.all("batches")) {
+        if (!b.path) b.path = pathOf(b.ctx);
+        const state = this.task?.nodes[pathKey(b.ctx)];
+        const archived = (Object.values(b.files).length > 0 || !!b.exportId) && Object.values(b.files).every((f) => f.exported);
+        if (archived || state?.batchKey === b.key && state.deleted) {
+          cleanup.push({ table: "batches", key: b.key, delete: true });
+          continue;
+        }
+        let changed = false;
+        for (const kind of KINDS) if (b.files[kind]?.exported) {
+          delete b.files[kind];
+          if (b.outcomes) delete b.outcomes[kind];
+          changed = true;
+        }
+        if (b.exportId || b.supplementOf) {
+          delete b.exportId;
+          delete b.supplementOf;
+          changed = true;
+        }
+        if (!b.outcomes) {
+          b.outcomes = {};
+          for (const k of KINDS) if (b.files[k]) b.outcomes[k] = { status: "data", attempts: 0, reason: "\u65E7\u7248\u8BB0\u5F55\uFF0C\u4FDD\u7559\u539F\u59CB\u6570\u636E" };
+        }
+        for (const o of Object.values(b.outcomes)) if (o.status === "pending") {
+          o.status = "interrupted";
+          o.reason = "\u9875\u9762\u5237\u65B0\u524D\u8BF7\u6C42\u672A\u5B8C\u6210";
+        }
+        this.batches.set(b.key, b);
+        if (changed) cleanup.push({ table: "batches", value: b });
+      }
+      if (this.task) {
+        for (const [path, node] of Object.entries(this.task.nodes)) if (!this.batches.has(node.batchKey)) delete this.task.nodes[path];
+        cleanup.push({ table: "tasks", value: structuredClone(this.task) });
+      }
+      await this.write(cleanup);
+      if (this.task?.status === "running") {
+        this.task.status = "stopped";
+        this.task.reason = "\u9875\u9762\u5DF2\u5237\u65B0\uFF0C\u53EF\u7EE7\u7EED\u672A\u5B8C\u6210\u4EFB\u52A1";
+      }
+      this.changed();
+    }
+    async hydrated(b) {
       const copy = structuredClone(b);
       if (Object.values(copy.files).some((f) => f.text === void 0)) {
         const old = await this.store.get("batches", b.key);
-        for (const kind of TYPES) {
-          const f = copy.files[kind], prev = old?.files[kind];
-          if (f && f.text === void 0 && prev?.requestId === f.requestId) f.text = prev.text;
+        for (const k of KINDS) {
+          const f = copy.files[k], previous = old?.files[k];
+          if (f && f.text === void 0 && previous?.requestId === f.requestId) f.text = previous.text;
         }
       }
       return copy;
     }
-    async snapshots(keys, pendingOnly = true) {
-      await this.queue;
-      return Promise.all(keys.map(async (key) => {
-        const b = this.batches.get(key);
-        if (!b) throw new Error("\u6279\u6B21\u5DF2\u4E0D\u5B58\u5728");
-        const result = await this.withStoredText(b);
-        result.availableTypes = TYPES.filter((t) => !!result.files[t]);
-        if (pendingOnly) {
-          for (const type of TYPES) if (result.files[type]?.exported) delete result.files[type];
-        }
-        return result;
-      }));
+    async persist(b) {
+      const ops = [];
+      if (b && !this.deleted.has(b.key)) ops.push({ table: "batches", value: await this.hydrated(b) });
+      if (this.task) ops.push({ table: "tasks", value: structuredClone(this.task) });
+      await this.write(ops);
     }
-    async markExported(snapshots, exportId) {
-      return this.serial(async () => {
-        for (const snap of snapshots) {
-          const b = this.batches.get(snap.key);
-          if (!b) continue;
-          b.exportId ||= exportId;
-          for (const type of TYPES) {
-            const f = b.files[type];
-            if (f && f.requestId === snap.files[type]?.requestId) f.exported = true;
-          }
-          if (Object.values(b.files).some((f) => !f.exported)) b.supplementOf ||= b.exportId;
-          await this.store.put("batches", await this.withStoredText(b));
-          for (const f of Object.values(b.files)) if (f.exported) delete f.text;
+    async http(url, body) {
+      if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+      const requestId = `${this.task?.id || "directory"}-${++this.requests}`;
+      const abort = new AbortController();
+      const stop = () => abort.abort();
+      this.controller.signal.addEventListener("abort", stop, { once: true });
+      const timeout = setTimeout(() => abort.abort(), this.rt.timeout), started = this.rt.now();
+      this.log("I", `\u8BF7\u6C42 ${requestId}\uFF5C${url}\uFF5C${this.task?.current ? contextLabel(this.task.current) : "\u83B7\u53D6\u76EE\u5F55"}`);
+      try {
+        const r = await this.fetcher(url, { method: "POST", credentials: "include", signal: abort.signal, headers: { accept: "application/json, text/plain, */*", "content-type": "application/json;charset=UTF-8" }, body: JSON.stringify(body) });
+        const raw = await r.text();
+        let json;
+        try {
+          json = raw ? JSON.parse(raw) : void 0;
+        } catch {
         }
+        this.log("I", `\u54CD\u5E94 ${requestId}\uFF5CHTTP ${r.status}\uFF5C${this.rt.now() - started}ms`);
+        return { status: r.status, raw, json, retry: r.status === 429 || [500, 502, 503, 504].includes(r.status), retryAfter: retryAfter(r.headers.get("Retry-After"), this.rt.now()), requestId };
+      } catch (e) {
+        return { status: 0, raw: "", error: String(e), retry: !this.controller.signal.aborted, aborted: this.controller.signal.aborted, retryAfter: 0, requestId };
+      } finally {
+        clearTimeout(timeout);
+        this.controller.signal.removeEventListener("abort", stop);
+      }
+    }
+    async cool(milliseconds) {
+      if (!this.task) return;
+      this.task.cooldownUntil = this.rt.now() + milliseconds;
+      await this.serial(() => this.persist());
+      this.log("W", `\u7EDF\u4E00\u9650\u6D41\u51B7\u5374 ${Math.ceil(milliseconds / 1e3)}\u79D2\uFF0C\u671F\u95F4\u4E0D\u542F\u52A8\u8BF7\u6C42`);
+      await this.rt.wait(milliseconds, this.controller.signal);
+    }
+    async directory(type, market = "", cat = "", ptd = "") {
+      if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+      const cached = this.cache.get(type, market, cat, ptd);
+      if (cached) {
+        this.log("I", `\u590D\u7528\u76EE\u5F55 ${JSON.stringify([type, market, cat, ptd])}\uFF5C${cached.length}\u9879`);
+        return cached;
+      }
+      let rate = false;
+      for (let attempt = 0; attempt <= this.rt.retries; attempt++) {
+        const seq = ++this.cache.seq;
+        const r = await this.http("/next/v2/getFilters", directoryPayload(type, market || void 0, cat || void 0, ptd || void 0));
+        if (r.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+        if ([401, 403].includes(r.status)) throw new AuthError(`\u76EE\u5F55 HTTP ${r.status}`);
+        if (r.status === 429) {
+          if (rate) throw new RateLimited("\u51B7\u5374\u540E\u7684\u76EE\u5F55\u8BF7\u6C42\u4ECD\u8FD4\u56DE429");
+          rate = true;
+          await this.cool(Math.max(6e4, r.retryAfter) + this.rt.random() * 5e3);
+        } else if (r.status >= 200 && r.status < 300) {
+          const items = options(r.json, type);
+          this.cache.put(type, market, cat, ptd, r.json, seq);
+          return items;
+        } else if (!r.retry || attempt === this.rt.retries) throw new Error(`\u76EE\u5F55\u8BF7\u6C42\u5931\u8D25\uFF1A${type}\uFF5CHTTP ${r.status}\uFF5C${r.error || ""}`);
+        else await this.rt.wait(Math.max(3e3 * 2 ** attempt, r.retryAfter), this.controller.signal);
+      }
+      throw new Error("\u76EE\u5F55\u91CD\u8BD5\u8017\u5C3D");
+    }
+    async resolveStart(start2) {
+      const find = (items, value, label) => {
+        const x2 = items.find((c) => c.value === value);
+        if (!x2) throw new Error(`\u8D77\u70B9\u5DF2\u4E0D\u5728\u6709\u6548${label}\u76EE\u5F55\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9`);
+        return x2;
+      };
+      const store = find(await this.directory("MP"), start2.store.value, "\u5546\u57CE");
+      const category = find(await this.directory("MP_CAT", store.value), start2.category.value, "\u7C7B\u522B");
+      const product_type = find(await this.directory("MP_CAT_PTD", store.value, category.value), start2.product_type.value, "\u5546\u54C1\u7C7B\u578B");
+      const keyword = find(await this.directory("MP_CAT_PTD_BN", store.value, category.value, product_type.value), start2.keyword.value, "\u5173\u952E\u8BCD");
+      return { store, category, product_type, keyword, nodeId: keyword.value };
+    }
+    async result(b, kind, r) {
+      await this.serial(async () => {
+        if (this.deleted.has(b.key)) return;
+        const task = this.task;
+        const previous = b.outcomes?.[kind];
+        const outcome = { status: r.aborted ? "interrupted" : "failed", http: r.status, attempts: previous?.attempts || 1, at: iso() };
+        let reason = r.error || (r.status < 200 || r.status >= 300 ? `HTTP ${r.status}` : "");
+        if (!reason) {
+          if (r.status === 204) {
+            outcome.status = "no-content";
+            outcome.reason = "HTTP 204\uFF0C\u65E0\u54CD\u5E94\u6B63\u6587";
+          } else {
+            try {
+              outcome.status = classify(kind, r.json, b.ctx);
+            } catch (e) {
+              reason = String(e);
+            }
+            if (!reason) {
+              b.files[kind] = { name: `${b.nodeId}\u4E28${kind}\u4E28${stamp()}.json`, text: r.raw, exported: false, requestId: r.requestId, seq: this.requests };
+            }
+          }
+        }
+        const ops = [];
+        if (reason) {
+          outcome.reason = reason;
+        }
+        b.outcomes ||= {};
+        b.outcomes[kind] = outcome;
+        b.updatedAt = this.rt.now();
+        const node = task.nodes[pathKey(b.ctx)];
+        if (!node.counted && Object.keys(b.files).length) {
+          node.counted = true;
+          task.count++;
+        }
+        ops.push({ table: "batches", value: await this.hydrated(b) }, { table: "tasks", value: structuredClone(task) });
+        await this.write(ops);
+        this.log(outcome.status === "failed" ? "W" : "I", `${b.nodeId}\uFF5C${kind}\uFF5C${outcome.status}${reason ? `\uFF5C${reason}` : ""}`);
         this.changed();
       });
     }
-    complete(key) {
-      const b = this.batches.get(key);
-      return !!b && TYPES.every((t) => b.files[t]) && !Object.keys(b.requests).length;
+    async collect(c) {
+      const task = this.task, pk = pathKey(c);
+      let state = task.nodes[pk];
+      if (state?.deleted || state?.processed) return;
+      let b = state ? this.batches.get(state.batchKey) : void 0;
+      if (!b) {
+        const key = JSON.stringify([task.id, ...pathOf(c)]);
+        b = { key, taskId: task.id, path: pathOf(c), nodeId: c.keyword.value, ctx: structuredClone(c), round: task.id, createdAt: this.rt.now(), updatedAt: this.rt.now(), files: {}, outcomes: {}, checked: false, pageUrl: "https://sellercentral.amazon.com/selection/category-insights" };
+        state = { batchKey: key, processed: false, counted: false, deleted: false };
+        task.nodes[pk] = state;
+        this.batches.set(key, b);
+      }
+      this.changed();
+      let pending = KINDS.filter((k) => !["data", "empty", "no-content"].includes(b.outcomes?.[k]?.status || ""));
+      let rateSeen = false;
+      for (let wave = 0; pending.length && wave <= this.rt.retries; wave++) {
+        if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+        if (this.deleted.has(b.key)) return;
+        const batch = b;
+        await this.serial(async () => {
+          for (const k of pending) {
+            batch.outcomes ||= {};
+            batch.outcomes[k] = { status: "pending", attempts: (batch.outcomes[k]?.attempts || 0) + 1 };
+          }
+          await this.persist(batch);
+        });
+        const settled = await Promise.all(pending.map(async (kind) => {
+          const req = dataRequest(kind, c), r = await this.http(req.url, req.body);
+          await this.result(batch, kind, r);
+          return { kind, r };
+        }));
+        if (this.deleted.has(batch.key)) return;
+        if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+        if (settled.some((x2) => [401, 403].includes(x2.r.status))) throw new AuthError("HTTP 401/403\uFF0C\u505C\u6B62\u540E\u7EED\u8C03\u5EA6");
+        const rates = settled.filter((x2) => x2.r.status === 429);
+        if (rates.length) {
+          if (rateSeen) throw new RateLimited("\u51B7\u5374\u540E\u7684\u91CD\u8BD5\u6CE2\u6B21\u518D\u6B21\u51FA\u73B0429");
+          rateSeen = true;
+          await this.cool(Math.max(6e4, ...rates.map((x2) => x2.r.retryAfter)) + this.rt.random() * 5e3);
+        }
+        pending = settled.filter((x2) => x2.r.retry && wave < this.rt.retries && !this.deleted.has(batch.key)).map((x2) => x2.kind);
+        if (pending.length && !rates.length) {
+          const delay = Math.max(3e3 * 2 ** wave, ...settled.filter((x2) => pending.includes(x2.kind)).map((x2) => x2.r.retryAfter));
+          this.log("W", `\u4EC5\u91CD\u8BD5\u5931\u8D25\u63A5\u53E3 ${pending.join(",")}\uFF5C\u7B49\u5F85${Math.ceil(delay / 1e3)}\u79D2`);
+          await this.rt.wait(delay, this.controller.signal);
+        }
+      }
+      await this.serial(async () => {
+        if (!state.deleted) state.processed = true;
+        await this.persist(this.deleted.has(b.key) ? void 0 : b);
+      });
+    }
+    stop() {
+      if (!this.running) return;
+      this.log("W", "\u6536\u5230\u7EC8\u6B62\u6307\u4EE4\uFF1A\u53D6\u6D88\u7B49\u5F85\u548C\u5728\u9014\u8BF7\u6C42\uFF0C\u4FDD\u5B58\u5DF2\u6536\u5230\u7684\u6570\u636E\u5E76\u6536\u5C3E");
+      this.controller.abort();
+    }
+    async run(start2, config2 = DEFAULTS, resume = false) {
+      if (this.running) throw new Error("\u5DF2\u6709\u4EFB\u52A1\u6B63\u5728\u8FD0\u884C");
+      if (this.fatal) throw new Error("\u5B58\u50A8\u6545\u969C\u5C1A\u672A\u6062\u590D\uFF0C\u8BF7\u5148\u4E0B\u8F7D\u5185\u5B58\u6570\u636E");
+      this.running = true;
+      this.controller = new AbortController();
+      try {
+        if (resume) {
+          if (!this.task) throw new Error("\u6CA1\u6709\u53EF\u7EE7\u7EED\u7684\u4EFB\u52A1");
+          for (const node of Object.values(this.task.nodes)) if (!node.deleted) {
+            const batch = this.batches.get(node.batchKey);
+            node.processed = !!batch && KINDS.every((k) => ["data", "empty", "no-content"].includes(batch.outcomes?.[k]?.status || ""));
+          }
+          this.task.status = "running";
+          this.task.reason = "";
+        } else {
+          this.task = { key: "active", id: `task-${this.rt.now()}-${Math.random().toString(36).slice(2)}`, config: normalizeConfig(config2), start: structuredClone(start2), current: null, status: "running", nodes: {}, cursor: 0, count: 0, reason: "", cooldownUntil: 0, createdAt: this.rt.now() };
+        }
+        this.log("I", `===== \u4EFB\u52A1${resume ? "\u7EED\u91C7" : "\u5F00\u59CB"}\uFF5C${contextLabel(this.task.start)}\uFF5C\u6BCF\u6279${this.task.config.target}\u8282\u70B9\uFF5C\u603B\u91CF${this.task.config.totalLimit || "\u4E0D\u9650"}\uFF5C\u95F4\u9694${this.task.config.delayMin}\u2013${this.task.config.delayMax}\u79D2\uFF5C\u5FAA\u73AF${Object.entries(this.task.config.levels).filter(([, v]) => v).map(([k]) => k).join("\u2192")} =====`);
+        this.changed();
+        await this.serial(() => this.persist());
+        if (this.task.cooldownUntil > this.rt.now()) await this.rt.wait(this.task.cooldownUntil - this.rt.now(), this.controller.signal);
+        this.task.start = await this.resolveStart(this.task.start);
+        const iterator = traverse(this.task.start, this.task.config.levels, (...args) => this.directory(...args));
+        let previous = false, position = 0;
+        while (!this.controller.signal.aborted) {
+          const atLimit = this.task.config.totalLimit && this.task.count >= this.task.config.totalLimit;
+          if (atLimit && !Object.values(this.task.nodes).some((n) => n.counted && !n.processed && !n.deleted)) {
+            this.log("I", "\u8FBE\u5230\u672C\u4EFB\u52A1\u8282\u70B9\u603B\u91CF\u4E0A\u9650\uFF0C\u505C\u6B62\u542F\u52A8\u65B0\u8282\u70B9");
+            break;
+          }
+          const next = await iterator.next();
+          if (next.done) break;
+          const ordinal = position++;
+          const state = this.task.nodes[pathKey(next.value)];
+          if (ordinal < (this.task.cursor || 0) && !state) continue;
+          if (state?.processed || state?.deleted || atLimit && !state?.counted) continue;
+          if (previous) {
+            const { delayMin, delayMax } = this.task.config, ms = (delayMin + this.rt.random() * (delayMax - delayMin)) * 1e3;
+            this.log("I", `\u8282\u70B9\u95F4\u968F\u673A\u5EF6\u8FDF ${(ms / 1e3).toFixed(1)}\u79D2`);
+            await this.rt.wait(ms, this.controller.signal);
+          }
+          this.task.current = next.value;
+          this.log("I", `\u5F00\u59CB\u8282\u70B9\uFF5C${contextLabel(next.value)}`);
+          this.changed();
+          await this.collect(next.value);
+          previous = true;
+          this.task.cursor = Math.max(this.task.cursor || 0, ordinal + 1);
+          await this.serial(() => this.persist());
+          const pending = this.pendingKeys().filter((key) => this.batches.get(key)?.taskId === this.task.id);
+          if (pending.length >= this.task.config.target && !await this.exporter(pending, "\u6279\u91CF")) throw new Error("\u6279\u91CF\u4E0B\u8F7D\u5931\u8D25\uFF0C\u505C\u6B62\u5E76\u4FDD\u7559\u5F85\u4E0B\u8F7D\u6570\u636E");
+        }
+        if (this.controller.signal.aborted) throw new Stopped("\u624B\u52A8\u7EC8\u6B62");
+        this.task.status = "completed";
+        this.task.reason = "\u904D\u5386\u5B8C\u6210\u6216\u8FBE\u5230\u6570\u91CF\u4E0A\u9650";
+      } catch (e) {
+        if (this.task) {
+          this.task.status = this.fatal ? "storage-error" : e instanceof RateLimited ? "rate-limited" : e instanceof AuthError ? "auth-error" : e instanceof Stopped ? "stopped" : "failed";
+          this.task.reason = String(e);
+        }
+        this.log("W", `\u4EFB\u52A1\u7ED3\u675F\uFF1A${String(e)}`);
+      } finally {
+        if (!this.fatal) {
+          try {
+            await this.serial(async () => {
+              for (const b of this.batches.values()) if (b.taskId === this.task?.id && Object.values(b.outcomes || {}).some((o) => o.status === "pending")) {
+                for (const o of Object.values(b.outcomes || {})) if (o.status === "pending") {
+                  o.status = "interrupted";
+                  o.reason = "\u4EFB\u52A1\u7ED3\u675F\u524D\u672A\u83B7\u5F97\u5B8C\u6574\u54CD\u5E94";
+                }
+                await this.persist(b);
+              }
+            });
+          } catch {
+          }
+        }
+        if (!this.fatal) {
+          try {
+            await this.serial(() => this.persist());
+          } catch {
+          }
+        }
+        const remaining2 = this.pendingKeys().filter((key) => this.batches.get(key)?.taskId === this.task?.id);
+        if (remaining2.length) {
+          try {
+            await this.exporter(remaining2, "\u6536\u5C3E");
+          } catch (e) {
+            this.log("E", `\u6536\u5C3E\u4E0B\u8F7D\u5931\u8D25\uFF0C\u6570\u636E\u4FDD\u7559\uFF1A${String(e)}`);
+          }
+        }
+        this.running = false;
+        this.changed();
+        this.log("I", `\u672C\u6B21\u4EFB\u52A1\u7ED3\u675F\uFF5C\u5DF2\u4FDD\u5B58${this.task?.count || 0}\u8282\u70B9\uFF5C${this.task?.status || "\u672A\u5F00\u59CB"}`);
+      }
+    }
+    pendingKeys() {
+      return [...this.batches.values()].filter((b) => Object.keys(b.files).length > 0).map((b) => b.key);
+    }
+    visible() {
+      return [...this.batches.values()].sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
+    }
+    async snapshots(keys) {
+      return this.serial(async () => Promise.all(keys.filter((k) => !this.deleted.has(k) && this.batches.has(k)).map((k) => this.hydrated(this.batches.get(k)))));
+    }
+    async remove(keys, downloaded = false) {
+      const selected = keys.filter((k) => this.batches.has(k));
+      for (const key of selected) this.deleted.add(key);
+      try {
+        await this.serial(async () => {
+          const task = this.task ? structuredClone(this.task) : null;
+          if (task) {
+            for (const [path, node] of Object.entries(task.nodes)) if (selected.includes(node.batchKey)) delete task.nodes[path];
+          }
+          const ops = selected.map((key) => ({ table: "batches", key, delete: true }));
+          if (task) ops.push({ table: "tasks", value: task });
+          await this.write(ops);
+          if (this.task && task) this.task.nodes = task.nodes;
+          for (const key of selected) this.batches.delete(key);
+        });
+      } catch (e) {
+        for (const key of selected) this.deleted.delete(key);
+        throw e;
+      }
+      this.changed();
+      this.log("I", `${downloaded ? "\u4E0B\u8F7D\u5DF2\u89E6\u53D1\uFF0C\u5DF2\u6E05\u9664" : "\u5DF2\u5B8C\u5168\u5220\u9664"} ${selected.length}\u4E2A\u8282\u70B9\u7684\u5185\u5B58\u3001IndexedDB\u6B63\u6587\u548C\u7ED3\u679C\u8BB0\u5F55\uFF1B\u4EC5\u4FDD\u7559\u4EFB\u52A1\u603B\u4F53\u8FDB\u5EA6\u4E0E\u8BA1\u6570`);
     }
   };
 
-  // 仓库/tools.aioz.cc/node_modules/fflate/esm/browser.js
   var u8 = Uint8Array;
   var u16 = Uint16Array;
   var i32 = Int32Array;
@@ -421,10 +809,10 @@
     0
   ]);
   var clim = new u8([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
-  var freb = function(eb, start) {
+  var freb = function(eb, start2) {
     var b = new u16(31);
     for (var i2 = 0; i2 < 31; ++i2) {
-      b[i2] = start += 1 << eb[i2 - 1];
+      b[i2] = start2 += 1 << eb[i2 - 1];
     }
     var r = new i32(b[30]);
     for (var i2 = 1; i2 < 30; ++i2) {
@@ -1052,284 +1440,82 @@
     return out;
   }
 
-  // Capture module: ui.js
-  (function() {
-    "use strict";
-    const TARGET_KEYS = [
-      "/next/v2/getPerformanceDashboard",
-      "/next/v2/getFeaturesDashboard",
-      "/next/v2/relatedAsinDashboard"
-    ];
-    const SEP = "\u4E28";
-    const F = {
-      // 页面四级筛选器
-      store: "sgar-tmp-filter",
-      category: "sgar-cat-filter",
-      ptype: "sgar-pdt-filter",
-      keyword: "sgar-bn-filter"
+  function saveAs(blob, filename) {
+    const url = URL.createObjectURL(blob), a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.append(a);
+    a.click();
+    setTimeout(() => {
+      a.remove();
+      URL.revokeObjectURL(url);
+    }, 5e3);
+  }
+  function nodeStatus(b) {
+    const main = b.outcomes?.getPerformanceDashboard?.status;
+    if (main !== "data") return main === "empty" || main === "no-content" ? "\u65E0\u6709\u6548\u4E3B\u6570\u636E" : "\u4E3B\u6570\u636E\u672A\u6210\u529F";
+    return KINDS.every((k) => ["data", "empty", "no-content"].includes(b.outcomes?.[k]?.status || "")) ? "\u5DF2\u5B8C\u6210" : "\u90E8\u5206\u5B8C\u6210";
+  }
+  function metadata(b) {
+    const outcomes = b.outcomes || {};
+    return {
+      schema_version: 1,
+      script_version: VERSION,
+      node_id: b.nodeId,
+      captured_at: new Date(b.createdAt).toISOString(),
+      updated_at: new Date(b.updatedAt).toISOString(),
+      page_url: b.pageUrl,
+      store: b.ctx.store,
+      category: b.ctx.category,
+      product_type: b.ctx.product_type,
+      keyword: b.ctx.keyword,
+      file_count: Object.keys(b.files).length,
+      response_types: Object.keys(b.files),
+      response_files: Object.values(b.files).map((f) => f.name),
+      capture_batch_id: b.key,
+      capture_round: b.round,
+      path_codes: b.path,
+      export_batch_id: b.exportId || null,
+      supplement_of: b.supplementOf || null,
+      task_id: b.taskId || null,
+      source: b.taskId ? "active-api" : "legacy-capture",
+      node_status: nodeStatus(b),
+      interface_results: outcomes,
+      business_data_count: Object.values(outcomes).filter((o) => o.status === "data").length,
+      empty_response_count: Object.values(outcomes).filter((o) => ["empty", "no-content"].includes(o.status)).length,
+      error_count: Object.values(outcomes).filter((o) => ["failed", "interrupted"].includes(o.status)).length,
+      missing_types: KINDS.filter((k) => !["data", "empty", "no-content"].includes(outcomes[k]?.status || ""))
     };
-    const TYPE_LABELS = [
-      { key: "getPerformanceDashboard", label: "\u6240\u6709ASIN" },
-      { key: "relatedAsin_top_grossing", label: "\u6700\u7545\u9500ASIN" },
-      { key: "relatedAsin_new_successful", label: "\u65B0\u53D1\u5E03ASIN" },
-      { key: "getFeaturesDashboard", label: "\u4EA7\u54C1\u7279\u5F81\u8D8B\u52BF" }
-    ];
-    const batches = {};
-    const processedNodeIds = /* @__PURE__ */ new Set();
-    function toUrlString(url) {
-      if (!url) return "";
-      if (typeof url === "string") return url;
-      if (url instanceof URL) return url.href;
-      if (typeof url === "object" && url.url) return url.url;
-      return String(url);
+  }
+  var Downloads = class {
+    constructor(engine2, log2, saver = saveAs) {
+      this.engine = engine2;
+      this.log = log2;
+      this.saver = saver;
     }
-    function isTargetUrl(url) {
-      const s = toUrlString(url);
-      return TARGET_KEYS.some((k) => s.includes(k));
-    }
-    function sleep(ms) {
-      return new Promise((r) => setTimeout(r, ms));
-    }
-    async function interruptibleSleep(ms, checkStop = true) {
-      const step = 200;
-      let elapsed = 0;
-      while (elapsed < ms) {
-        if (checkStop && (AUTO.stopping || !AUTO.running)) break;
-        const cur = Math.min(step, ms - elapsed);
-        await sleep(cur);
-        elapsed += cur;
-      }
-    }
-    function safeSaveAs(blob, filename) {
-      try {
-        if (typeof saveAs === "function") {
-          saveAs(blob, filename);
-          return;
-        }
-        if (window.saveAs && typeof window.saveAs === "function") {
-          window.saveAs(blob, filename);
-          return;
-        }
-      } catch (e) {
-        console.warn("[Tampermonkey] saveAs \u5F02\u5E38\uFF0C\u4F7F\u7528 a[download] \u56DE\u9000", e);
-      }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      setTimeout(() => {
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      }, 1500);
-    }
-    function stamp() {
-      return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-    }
-    function formatBytes(b) {
-      if (!b) return "0 B";
-      if (b < 1024) return b + " B";
-      if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
-      return (b / 1048576).toFixed(2) + " MB";
-    }
-    const logs = [];
-    let logBox = null;
-    function addLog(level, msg) {
-      const t = /* @__PURE__ */ new Date();
-      const ts = t.toLocaleTimeString("zh-CN", { hour12: false }) + "." + String(t.getMilliseconds()).padStart(3, "0");
-      logs.push({ ts, level, msg, full: t.toISOString() });
-      if (logs.length > 3e3) logs.shift();
-      if (logBox) {
-        const atBottom = logBox.scrollHeight - logBox.scrollTop - logBox.clientHeight < 30;
-        const d = document.createElement("div");
-        d.textContent = `[${ts}] ${msg}`;
-        d.style.color = level === "E" ? "#ff8a80" : level === "W" ? "#ffd54f" : "#c8e6c9";
-        d.style.whiteSpace = "pre-wrap";
-        d.style.wordBreak = "break-all";
-        logBox.appendChild(d);
-        while (logBox.childNodes.length > 800) logBox.removeChild(logBox.firstChild);
-        if (atBottom) logBox.scrollTop = logBox.scrollHeight;
-      }
-    }
-    const logI = (m) => addLog("I", m);
-    const logW = (m) => addLog("W", "\u26A0 " + m);
-    const logE = (m) => addLog("E", "\u2716 " + m);
-    function downloadLog() {
-      if (!logs.length) {
-        alert("\u6682\u65E0\u65E5\u5FD7");
-        return;
-      }
-      const head = `\u4E9A\u9A6C\u900A\u7C7B\u76EE\u6570\u636E\u6293\u53D6\u65E5\u5FD7
-\u5BFC\u51FA\u65F6\u95F4\uFF1A${(/* @__PURE__ */ new Date()).toLocaleString("zh-CN")}
-\u9875\u9762\uFF1A${location.href}
-\u5171 ${logs.length} \u6761
-${"=".repeat(60)}
-`;
-      const body = logs.map((l) => `[${l.full}] [${l.level}] ${l.msg}`).join("\n");
-      safeSaveAs(
-        new Blob([head + body], { type: "text/plain;charset=utf-8" }),
-        `\u7C7B\u76EE\u6570\u636E\u6293\u53D6_${stamp()}.log`
-      );
-      logI("\u65E5\u5FD7\u5DF2\u5BFC\u51FA");
-    }
-    function readFilter(name) {
-      const nodes = Array.from(document.querySelectorAll(`kat-radiobutton[name="${name}"]`));
-      let index = -1;
-      nodes.forEach((el2, i2) => {
-        const c = el2.getAttribute("checked");
-        const isChecked = el2.checked === true || c !== null && c !== "false" || el2.getAttribute("aria-checked") === "true";
-        if (isChecked) index = i2;
-      });
-      const el = index >= 0 ? nodes[index] : null;
-      return {
-        nodes,
-        index,
-        el,
-        total: nodes.length,
-        label: el ? el.getAttribute("label") : null,
-        value: el ? el.getAttribute("value") : null
-      };
-    }
-    function normText(s) {
-      if (s === null || s === void 0) return "";
-      return String(s).replace(/\s+/g, " ").trim();
-    }
-    function one(f) {
-      return {
-        label: normText(f.label),
-        value: normText(f.value),
-        index: f.index >= 0 ? f.index + 1 : 0,
-        total: f.total
-      };
-    }
-    function readContext() {
-      const s = readFilter(F.store), c = readFilter(F.category);
-      const p = readFilter(F.ptype), k = readFilter(F.keyword);
-      return {
-        store: one(s),
-        category: one(c),
-        product_type: one(p),
-        keyword: one(k),
-        nodeId: k.value || null
-      };
-    }
-    const DB_NAME = "amz_category_insights_capture_v1";
-    const dbReady = new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, 1);
-      request.onupgradeneeded = () => {
-        request.result.createObjectStore("batches", { keyPath: "key" });
-        request.result.createObjectStore("quarantine", { keyPath: "id" });
-      };
-      request.onsuccess = () => {
-        const db = request.result;
-        db.onversionchange = () => db.close();
-        resolve(db);
-      };
-      request.onerror = () => reject(request.error);
-      request.onblocked = () => reject(new Error("\u6570\u636E\u5E93\u5347\u7EA7\u88AB\u5176\u4ED6\u6807\u7B7E\u9875\u963B\u585E"));
-    });
-    const storage = {
-      async put(table, value) {
-        const db = await dbReady;
-        return new Promise((resolve, reject) => {
-          const tx = db.transaction(table, "readwrite");
-          tx.objectStore(table).put(structuredClone(value));
-          tx.oncomplete = resolve;
-          tx.onerror = () => reject(tx.error);
-          tx.onabort = () => reject(tx.error || new Error("\u4E8B\u52A1\u4E2D\u6B62"));
-        });
-      },
-      async all(table) {
-        const db = await dbReady;
-        return new Promise((resolve, reject) => {
-          const r = db.transaction(table).objectStore(table).getAll();
-          r.onsuccess = () => resolve(r.result);
-          r.onerror = () => reject(r.error);
-        });
-      },
-      async get(table, key) {
-        const db = await dbReady;
-        return new Promise((resolve, reject) => {
-          const r = db.transaction(table).objectStore(table).get(key);
-          r.onsuccess = () => resolve(r.result);
-          r.onerror = () => reject(r.error);
-        });
-      }
-    };
-    const engine = new CaptureEngine(storage, (m) => logI(m), refreshViews, location.href);
-    const restored = engine.restore();
-    function refreshViews() {
-      for (const key of Object.keys(batches)) delete batches[key];
-      for (const [key, b] of engine.batches) {
-        if (processedNodeIds.has(key)) continue;
-        const pending = Object.values(b.files).some((f) => !f.exported);
-        if (!pending && Object.keys(b.files).length && !Object.keys(b.requests).length) continue;
-        batches[key] = { ...b, files: Object.fromEntries(Object.entries(b.files).map(([type, f]) => [type, { ...f, blob: new Blob([f.text || ""], { type: "application/json" }) }])) };
-      }
-      if (typeof AUTO !== "undefined") {
-        if (engine.fatal) AUTO.stopping = true;
-        if (AUTO.running && AUTO.seen) {
-          for (const b of engine.batches.values()) if (Object.keys(b.files).length && b.createdAt >= AUTO.runStarted) AUTO.seen.add(b.key);
-          AUTO.totalCaptured = AUTO.seen.size;
-        }
-      }
-      refreshList();
-    }
-    function buildNodeMeta(b) {
-      const c = b.ctx;
-      return {
-        schema_version: 1,
-        script_version: VERSION,
-        node_id: b.nodeId,
-        captured_at: new Date(b.createdAt).toISOString(),
-        updated_at: new Date(b.updatedAt).toISOString(),
-        page_url: b.pageUrl,
-        store: c.store,
-        category: c.category,
-        product_type: c.product_type,
-        keyword: c.keyword,
-        file_count: Object.keys(b.files).length,
-        response_types: Object.keys(b.files),
-        response_files: Object.values(b.files).map((f) => f.name),
-        capture_batch_id: b.key,
-        capture_round: b.round,
-        path_codes: b.path,
-        export_batch_id: b.exportId || null,
-        supplement_of: b.supplementOf || null,
-        missing_types: TYPES.filter((type) => !(b.availableTypes || Object.keys(b.files)).includes(type)),
-        timed_out: !!b.timedOut,
-        request_evidence: Object.fromEntries(Object.entries(b.files).map(([type, f]) => [type, { request_id: f.requestId, request_sequence: f.seq }]))
-      };
-    }
-    async function saveZip(entries, name) {
+    engine;
+    log;
+    saver;
+    busy = false;
+    zip(entries, filename) {
       const bytes = zipSync(Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, strToU8(v)])), { level: 6 });
-      safeSaveAs(new Blob([bytes], { type: "application/zip" }), name);
-      logI(`\u5DF2\u89E6\u53D1\u4E0B\u8F7D ${name}\uFF08${formatBytes(bytes.length)}\uFF09\uFF1B\u8BF7\u68C0\u67E5\u6D4F\u89C8\u5668\u4E0B\u8F7D\u8BB0\u5F55`);
+      this.saver(new Blob([bytes], { type: "application/zip" }), filename);
+      this.log("I", `\u5DF2\u89E6\u53D1\u4E0B\u8F7D ${filename}\uFF5C${bytes.length}\u5B57\u8282\uFF1B\u8BF7\u68C0\u67E5\u6D4F\u89C8\u5668\u4E0B\u8F7D\u8BB0\u5F55`);
     }
-    let presetRoundClick = false;
-    function clickBoundKeyword(el) {
-      presetRoundClick = true;
-      try {
-        el?.click();
-      } finally {
-        presetRoundClick = false;
-      }
-    }
-    let downloadBusy = false;
-    async function downloadBatches(list, tag, pendingOnly = true) {
-      if (downloadBusy) {
-        logW("\u5DF2\u6709\u6253\u5305\u4EFB\u52A1\uFF0C\u8BF7\u7B49\u5F85\u5B8C\u6210");
+    async batches(keys, tag = "\u624B\u52A8") {
+      if (this.busy) {
+        this.log("W", "\u5DF2\u6709\u4E0B\u8F7D\u6253\u5305\u4EFB\u52A1\uFF0C\u8BF7\u7A0D\u540E\u91CD\u8BD5");
         return false;
       }
-      downloadBusy = true;
+      this.busy = true;
       try {
-        await restored;
-        const keys = list.map((b) => b.key);
-        const snapshots = await engine.snapshots(keys, pendingOnly);
+        const snapshots = await this.engine.snapshots(keys);
+        if (!snapshots.length) {
+          this.log("W", "\u6CA1\u6709\u53EF\u4E0B\u8F7D\u7684\u8282\u70B9");
+          return false;
+        }
         const groups = [];
         for (const b of snapshots) {
-          if (!Object.keys(b.files).length && !b.timedOut) continue;
           let group = groups.find((g) => !g.some((x2) => x2.nodeId === b.nodeId));
           if (!group) {
             group = [];
@@ -1337,911 +1523,366 @@ ${"=".repeat(60)}
           }
           group.push(b);
         }
-        if (!groups.length) {
-          logW("\u6CA1\u6709\u5F85\u5BFC\u51FA\u7684\u6570\u636E");
-          return false;
-        }
         for (const group of groups) {
-          const exportId = `${engine.session}-export-${++engine.seq}`;
-          const entries = {};
+          const id = `export-${stamp()}-${Math.random().toString(36).slice(2)}`, entries = {};
           for (const b of group) {
             const dir = `${b.nodeId}_${Object.keys(b.files).length}`;
             for (const f of Object.values(b.files)) {
-              if (f.text === void 0) throw new Error("\u672C\u5730\u6B63\u6587\u7F3A\u5931\uFF0C\u505C\u6B62\u5BFC\u51FA");
+              if (f.text === void 0) throw new Error("\u6B63\u6587\u4E0D\u5728\u53EF\u7528\u5B58\u50A8\u4E2D\uFF0C\u505C\u6B62\u5BFC\u51FA");
               entries[`${dir}/${f.name}`] = f.text;
             }
-            entries[`${dir}/NODE\u4E28${b.nodeId}\u4E28${stamp()}.json`] = JSON.stringify({ ...buildNodeMeta(b), export_batch_id: exportId }, null, 2);
+            entries[`${dir}/NODE\u4E28${b.nodeId}\u4E28${stamp()}.json`] = JSON.stringify({ ...metadata(b), export_batch_id: id }, null, 2);
           }
-          entries["\u91C7\u96C6\u62A5\u544A.json"] = JSON.stringify({ script_version: VERSION, export_batch_id: exportId, tag, download_status: "triggered", nodes: group.map((b) => buildNodeMeta(b)) }, null, 2);
-          const supplement = group.some((b) => b.supplementOf) ? "\u8865\u5145" : "\u6279\u91CF";
-          await saveZip(entries, `AMZ\u4E28\u7C7B\u76EE\u5206\u6790\u6570\u636E\u6293\u53D6\u4E28${supplement}\u4E28${group.length}\u4E28${stamp()}\u4E28${engine.seq}.zip`);
-          if (pendingOnly) await engine.markExported(group, exportId);
+          const task = this.engine.task;
+          const problems = [...this.engine.batches.values()].filter((b) => b.taskId === task?.id && nodeStatus(b) !== "\u5DF2\u5B8C\u6210").map((b) => ({ path: b.path, node_id: b.nodeId, node_status: nodeStatus(b), interface_results: b.outcomes }));
+          entries["\u91C7\u96C6\u62A5\u544A.json"] = JSON.stringify({
+            script_version: VERSION,
+            export_batch_id: id,
+            download_status: "triggered",
+            tag,
+            task: task ? { id: task.id, status: task.status, reason: task.reason, saved_node_count: task.count, config: task.config, current: task.current, problems } : null,
+            nodes: group.map(metadata)
+          }, null, 2);
+          this.zip(entries, `AMZ\u4E28\u7C7B\u76EE\u5206\u6790\u6570\u636E\u6293\u53D6\u4E28${group.some((b) => b.supplementOf) ? "\u8865\u5145" : tag}\u4E28${group.length}\u4E28${stamp()}.zip`);
+          await this.engine.remove(group.map((b) => b.key), true);
         }
-        if (engine.fatal) throw new Error(engine.fatal);
-        refreshViews();
         return true;
       } catch (e) {
-        logE(`\u6253\u5305\u6216\u4FDD\u5B58\u6807\u8BB0\u5931\u8D25\uFF1A${e.message}\uFF1B\u6570\u636E\u4FDD\u7559`);
+        this.log("E", `\u4E0B\u8F7D\u5931\u8D25\uFF0C\u6570\u636E\u4FDD\u7559\uFF1A${String(e)}`);
         return false;
       } finally {
-        downloadBusy = false;
+        this.busy = false;
       }
     }
-    function clearAll() {
-      for (const key of Object.keys(batches)) processedNodeIds.add(key);
-      refreshViews();
-      logI("\u5DF2\u9690\u85CF\u5217\u8868\uFF0C\u672C\u5730\u6570\u636E\u4ECD\u53EF\u5386\u53F2\u8865\u4E0B\u8F7D");
-    }
-    async function downloadAllAndClear(tag) {
-      return downloadBatches(Object.values(batches), tag);
-    }
-    async function downloadSingle(key) {
-      return downloadBatches([engine.batches.get(key)], "\u5355\u8282\u70B9");
-    }
-    async function exportQuarantine() {
-      await engine.queue;
-      const entries = {};
-      let saved = [];
-      try {
-        saved = await storage.all("quarantine");
-      } catch (e) {
-        logW(`\u5B58\u50A8\u4E0D\u53EF\u7528\uFF0C\u5BFC\u51FA\u5185\u5B58\u4E2D\u7684\u9694\u79BB\u54CD\u5E94\uFF1A${e.message}`);
-      }
-      const records = new Map(saved.map((q) => [q.id, q]));
-      for (const [id, q] of engine.unsavedQuarantines) records.set(id, q);
-      for (const q of records.values()) {
-        const { response, ...metadata } = q;
-        entries[`${q.id}/response.txt`] = response;
-        entries[`${q.id}/\u5F52\u5C5E\u8BC1\u636E.json`] = JSON.stringify(metadata, null, 2);
-      }
-      if (!Object.keys(entries).length) {
-        logW("\u6682\u65E0\u9694\u79BB\u54CD\u5E94");
-        return;
-      }
-      await saveZip(entries, `AMZ\u4E28\u5F85\u6838\u9A8C\u54CD\u5E94\u4E28${stamp()}.zip`);
-    }
-    const AUTO = {
-      running: false,
-      stopping: false,
-      target: 50,
-      // 每批下载的节点数
-      totalLimit: 0,
-      // 本次总抓取上限，0 = 不限制
-      delayMin: 5,
-      // 随机延迟下限（秒），最低 3
-      delayMax: 35,
-      // 随机延迟上限（秒），最低 3
-      levels: { keyword: true, ptype: false, category: false, store: false },
-      totalCaptured: 0
+  };
+
+  function installLayout(root) {
+    const get = (id) => root.getElementById(id);
+    const panel = get("panel"), workspace = get("workspace"), list = get("list");
+    const section = get("log-section"), logs2 = get("logs"), divider = get("divider");
+    const minimize = get("minimize"), restore = get("restore-title");
+    let ratio = 0.58, dragging = null;
+    let saved = { list: 0, log: 0, logAtBottom: true };
+    const bounds = () => {
+      const available = Math.max(0, workspace.clientHeight - divider.getBoundingClientRect().height);
+      return { available, min: Math.min(60, available / 2), max: Math.max(0, available - Math.min(72, available / 2)) };
     };
-    const DELAY_FLOOR = 3;
-    const LEVEL_ORDER = ["keyword", "ptype", "category", "store"];
-    function normalizeLevels(changed) {
-      AUTO.levels.keyword = true;
-      const i2 = LEVEL_ORDER.indexOf(changed);
-      if (AUTO.levels[changed]) {
-        for (let k = 0; k < i2; k++) AUTO.levels[LEVEL_ORDER[k]] = true;
-      } else {
-        for (let k = i2 + 1; k < LEVEL_ORDER.length; k++) AUTO.levels[LEVEL_ORDER[k]] = false;
-      }
-      syncLevelUI();
-    }
-    function waitKeywordRebuilt(expectedLevel, expectedValue, since, timeout = 25e3) {
-      return new Promise((res) => {
-        const t0 = Date.now();
-        let autoClicked = false;
-        const iv = setInterval(() => {
-          const kw = readFilter(F.keyword);
-          const ctx = readContext(), parent = JSON.stringify(pathOf(ctx).slice(0, 3));
-          const matched = readFilter(F[expectedLevel]).value === expectedValue;
-          const fresh = (engine.directorySequence.get(parent) || 0) > since;
-          if (matched && fresh && engine.catalog.get(parent)?.has(kw.value)) {
-            clearInterval(iv);
-            res(kw.value);
-            return;
-          }
-          if (kw.total > 0 && kw.index === -1 && !autoClicked && Date.now() - t0 > 1500) {
-            autoClicked = true;
-            logI("\u5173\u952E\u8BCD\u5217\u8868\u5DF2\u6E32\u67D3\uFF0C\u4E3B\u52A8\u6FC0\u6D3B\u9996\u9879");
-            kw.nodes[0].click();
-          }
-          if (Date.now() - t0 > timeout) {
-            clearInterval(iv);
-            res(null);
-          }
-        }, 300);
-      });
-    }
-    async function waitForPerf(key, timeout = 6e4) {
-      const started = Date.now();
-      while (AUTO.running && !AUTO.stopping && !engine.fatal) {
-        await engine.queue;
-        if (engine.complete(key)) return true;
-        if (Date.now() - started >= timeout) {
-          const batch = engine.batches.get(key);
-          if (batch) {
-            batch.timedOut = true;
-            await engine.store.put("batches", await engine.snapshots([key], false).then((x2) => x2[0]));
-          }
-          logW(`\u7B49\u5F8560\u79D2\u8D85\u65F6\uFF0C\u4FDD\u7559\u7F3A\u5931\u62A5\u544A\u5E76\u7EE7\u7EED\uFF1A${key}`);
-          refreshViews();
-          return false;
-        }
-        await sleep(200);
-      }
-      return false;
-    }
-    async function advance() {
-      const kw = readFilter(F.keyword);
-      if (kw.index >= 0 && kw.index < kw.total - 1) {
-        const el = kw.nodes[kw.index + 1];
-        const id = el.getAttribute("value");
-        logI(`\u5207\u6362\u5173\u952E\u8BCD [${kw.index + 2}/${kw.total}] \u2192 ${el.getAttribute("label")}\uFF08${id}\uFF09`);
-        engine.transition = false;
-        const nextContext = readContext();
-        nextContext.keyword = { label: normText(el.getAttribute("label")), value: id, index: kw.index + 2, total: kw.total };
-        nextContext.nodeId = id;
-        engine.begin(nextContext, true);
-        clickBoundKeyword(el);
-        await sleep(400);
-        return { nodeId: id, key: engine.active };
-      }
-      for (const lv of ["ptype", "category", "store"]) {
-        if (!AUTO.levels[lv]) break;
-        const f = readFilter(F[lv]);
-        if (f.index < f.total - 1) {
-          const el = f.nodes[f.index + 1];
-          const cn = { ptype: "\u5546\u54C1\u7C7B\u578B", category: "\u7C7B\u522B", store: "\u5546\u5E97" }[lv];
-          logI(`\u5173\u952E\u8BCD\u5DF2\u6293\u5B8C\uFF0C\u5207\u6362${cn} [${f.index + 2}/${f.total}] \u2192 ${el.getAttribute("label")}`);
-          const since = engine.seq;
-          beginTransition(lv, el.getAttribute("value"));
-          el.click();
-          const id = await waitKeywordRebuilt(lv, el.getAttribute("value"), since);
-          if (!id) {
-            logE(`\u5207\u6362${cn}\u540E\u5173\u952E\u8BCD\u5217\u8868\u672A\u91CD\u5EFA\uFF08\u8D85\u65F6\uFF09`);
-            engine.transition = false;
-            return null;
-          }
-          await sleep(300);
-          engine.transition = false;
-          const bound = engine.begin(readContext());
-          logI(`  \u65B0\u5217\u8868\u9996\u4E2A\u5173\u952E\u8BCD\u5DF2\u9009\u4E2D\uFF1A${readFilter(F.keyword).label}\uFF08${id}\uFF09`);
-          return { nodeId: id, key: bound?.key };
-        }
-        logI(`${{ ptype: "\u5546\u54C1\u7C7B\u578B", category: "\u7C7B\u522B", store: "\u5546\u5E97" }[lv]}\u5DF2\u5168\u90E8\u6293\u5B8C`);
-      }
-      return null;
-    }
-    async function autoRun() {
-      if (engine.fatal) {
-        logE(engine.fatal);
+    const apply = (requested) => {
+      if (panel.hidden) return;
+      const { available, min, max } = bounds();
+      if (!available) return;
+      const height = Math.max(min, Math.min(max, requested ?? ratio * available));
+      ratio = height / available;
+      list.style.flex = `0 0 ${height}px`;
+      section.style.flex = "1 1 0px";
+      divider.setAttribute("aria-valuemin", String(Math.round(min / available * 100)));
+      divider.setAttribute("aria-valuemax", String(Math.round(max / available * 100)));
+      divider.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
+    };
+    const endDrag = () => {
+      dragging = null;
+      workspace.classList.remove("resizing");
+    };
+    divider.onpointerdown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      dragging = e.pointerId;
+      divider.setPointerCapture(e.pointerId);
+      workspace.classList.add("resizing");
+    };
+    divider.onpointermove = (e) => {
+      if (dragging !== e.pointerId) return;
+      apply(e.clientY - workspace.getBoundingClientRect().top - divider.getBoundingClientRect().height / 2);
+    };
+    divider.onpointerup = divider.onpointercancel = divider.onlostpointercapture = endDrag;
+    divider.onkeydown = (e) => {
+      const { available, min, max } = bounds();
+      const delta = e.shiftKey ? 30 : 12;
+      if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+      e.preventDefault();
+      apply(e.key === "Home" ? min : e.key === "End" ? max : ratio * available + (e.key === "ArrowDown" ? delta : -delta));
+    };
+    minimize.onclick = () => {
+      endDrag();
+      const rect = panel.getBoundingClientRect();
+      saved = { list: list.scrollTop, log: logs2.scrollTop, logAtBottom: logs2.scrollHeight - logs2.scrollTop - logs2.clientHeight < 30 };
+      restore.style.left = `${rect.left}px`;
+      restore.style.top = `${rect.top}px`;
+      panel.hidden = true;
+      restore.hidden = false;
+      restore.focus();
+    };
+    restore.onclick = () => {
+      restore.hidden = true;
+      panel.hidden = false;
+      apply();
+      list.scrollTop = saved.list;
+      logs2.scrollTop = saved.logAtBottom ? logs2.scrollHeight : saved.log;
+      minimize.focus();
+    };
+    const observer = new ResizeObserver(() => apply());
+    observer.observe(workspace);
+    apply();
+  }
+
+  var logs = [];
+  var render = () => {
+  };
+  var renderLog = () => {
+  };
+  var log = (level, message) => {
+    logs.push({ at: (/* @__PURE__ */ new Date()).toISOString(), level, message });
+    if (logs.length > 3e3) logs.shift();
+    renderLog();
+  };
+  var cache = new DirectoryCache(log, () => render());
+  var nativeFetch = installFilterHooks(cache, log);
+  var storage = new BrowserStore();
+  var engine = new Collector(storage, cache, nativeFetch, log, () => render());
+  var downloads = new Downloads(engine, log);
+  engine.exporter = (keys, tag) => downloads.batches(keys, tag);
+  var ready = engine.restore();
+  var config = structuredClone(DEFAULTS);
+  var initialized = false;
+  var groupLabels = { keyword: "\u5173\u952E\u8BCD", ptype: "\u5546\u54C1\u7C7B\u578B", category: "\u7C7B\u522B", store: "\u5546\u57CE" };
+  var checked = (e) => e.checked === true || e.getAttribute("aria-checked") === "true" || e.hasAttribute("checked") && e.getAttribute("checked") !== "false";
+  function readContext() {
+    const read = (level) => {
+      const items = [...document.querySelectorAll(`kat-radiobutton[name="${FILTER_NAMES[level]}"]`)];
+      const selected = items.filter(checked);
+      if (selected.length !== 1) throw new Error(`\u8BF7\u5728\u539F\u9875\u9762\u660E\u786E\u9009\u62E9${groupLabels[level]}`);
+      const e = selected[0], value = e.getAttribute("value");
+      if (!value) throw new Error(`${groupLabels[level]}\u4EE3\u7801\u4E3A\u7A7A`);
+      return { value, label: e.getAttribute("label") || value, index: items.indexOf(e) + 1, total: items.length };
+    };
+    const choose = (selected, items, label) => {
+      if (!items) return selected;
+      const matched = items.find((x2) => x2.value === selected.value);
+      if (!matched) throw new Error(`${label}\u8D77\u70B9\u4E0D\u5728\u5DF2\u76D1\u542C\u76EE\u5F55\uFF0C\u8BF7\u91CD\u65B0\u9009\u62E9`);
+      return matched;
+    };
+    const store = choose(read("store"), cache.get("MP"), "\u5546\u57CE");
+    const category = choose(read("category"), cache.get("MP_CAT", store.value), "\u7C7B\u522B");
+    const product_type = choose(read("ptype"), cache.get("MP_CAT_PTD", store.value, category.value), "\u5546\u54C1\u7C7B\u578B");
+    const keyword = choose(read("keyword"), cache.get("MP_CAT_PTD_BN", store.value, category.value, product_type.value), "\u5173\u952E\u8BCD");
+    return { store, category, product_type, keyword, nodeId: keyword.value };
+  }
+  async function start(resume = false) {
+    if (engine.running) return;
+    await ready;
+    if (!initialized) throw new Error("\u521D\u59CB\u5316\u5C1A\u672A\u5B8C\u6210");
+    const start2 = resume && engine.task ? engine.task.start : readContext();
+    if (!navigator.locks) throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u4E0D\u652F\u6301 Web Locks\uFF0C\u8BF7\u4F7F\u7528\u65B0\u7248 Chrome");
+    await navigator.locks.request("amz_category_node_mapper_v1_active_tab", { ifAvailable: true }, async (lock) => {
+      if (!lock) {
+        log("W", "\u5DF2\u6709\u91C7\u96C6\u4EFB\u52A1\u8FD0\u884C\uFF0C\u8BF7\u5148\u7EC8\u6B62\u5176\u4ED6\u6807\u7B7E\u9875\u6216\u8282\u70B9\u6620\u5C04\u91C7\u96C6\u5668");
         return;
       }
-      AUTO.running = true;
-      AUTO.stopping = false;
-      AUTO.seen = new Set(Object.keys(batches));
-      AUTO.runStarted = Date.now();
-      AUTO.totalCaptured = AUTO.seen.size;
-      syncAutoUI();
-      const lv = LEVEL_ORDER.filter((k) => AUTO.levels[k]).map((k) => ({ keyword: "\u5173\u952E\u8BCD", ptype: "\u5546\u54C1\u7C7B\u578B", category: "\u7C7B\u522B", store: "\u5546\u5E97" })[k]);
-      logI(`===== \u81EA\u52A8\u6293\u53D6\u5F00\u59CB =====`);
-      logI(`\u5C42\u7EA7\uFF1A${lv.join(" \u2192 ")}\uFF5C\u6BCF\u6279 ${AUTO.target} \u4E2A\uFF5C\u603B\u91CF ${AUTO.totalLimit || "\u4E0D\u9650"}\uFF5C\u5EF6\u8FDF ${AUTO.delayMin}~${AUTO.delayMax} \u79D2`);
-      const initial = engine.begin(readContext());
-      if (initial) {
-        logI(`\u5148\u7B49\u5F85\u5F53\u524D\u8282\u70B9 ${initial.nodeId}`);
-        await waitForPerf(initial.key);
-      }
+      await engine.run(start2, config, resume);
+    });
+  }
+  function safe(work) {
+    return () => {
       try {
-        while (AUTO.running && !AUTO.stopping) {
-          const next = await advance();
-          if (!next) {
-            logI("\u6240\u6709\u76EE\u6807\u5DF2\u6293\u53D6\u5B8C\u6BD5");
-            break;
-          }
-          const ok = await waitForPerf(next.key);
-          if (engine.fatal) break;
-          if (AUTO.stopping) break;
-          if (ok) {
-            logI(`  \u8282\u70B9 ${next.nodeId} \u56DB\u7C7B\u6570\u636E\u5DF2\u9F50\u5168`);
-          } else {
-            logW(`\u8282\u70B9 ${next.nodeId} \u7B49\u5F85\u7ED3\u675F\u4ECD\u7F3A\u6570\u636E\uFF08\u4E0D\u8BA1\u4E3A\u5B8C\u6574\uFF09\uFF0C\u7EE7\u7EED\u4E0B\u4E00\u4E2A`);
-          }
-          if (AUTO.stopping) break;
-          const lo = AUTO.delayMin * 1e3, hi = AUTO.delayMax * 1e3;
-          const d = lo + Math.random() * Math.max(0, hi - lo);
-          logI(`  \u968F\u673A\u5EF6\u8FDF ${(d / 1e3).toFixed(1)} \u79D2\uFF08\u671F\u95F4\u4ECD\u4F1A\u63A5\u6536\u843D\u540E\u54CD\u5E94\uFF09`);
-          updateProgress();
-          await interruptibleSleep(d, true);
-          const n = Object.keys(batches).length;
-          if (n >= AUTO.target) {
-            logI(`\u5DF2\u7D2F\u8BA1 ${n} \u4E2A\u8282\u70B9\uFF0C\u8FBE\u5230\u6BCF\u6279\u9608\u503C\uFF0C\u5148\u4E0B\u8F7D\u5E76\u6E05\u7A7A\u518D\u7EE7\u7EED`);
-            await downloadAllAndClear("\u6279\u91CF");
-          }
-          if (AUTO.totalLimit > 0 && AUTO.totalCaptured >= AUTO.totalLimit) {
-            logI(`\u5DF2\u8FBE\u5230\u672C\u6B21\u603B\u91CF\u4E0A\u9650 ${AUTO.totalLimit} \u4E2A\u8282\u70B9\uFF0C\u505C\u6B62\u6293\u53D6`);
-            break;
-          }
-          if (AUTO.stopping) {
-            logI("\u6536\u5230\u7EC8\u6B62\u6307\u4EE4\uFF0C\u5DF2\u5B8C\u6210\u5F53\u524D\u8282\u70B9");
-            break;
-          }
-        }
+        Promise.resolve(work()).catch((e) => log("E", String(e)));
       } catch (e) {
-        logE("\u81EA\u52A8\u6293\u53D6\u5F02\u5E38\uFF1A" + (e && e.message));
+        log("E", String(e));
       }
-      if (Object.keys(batches).length) {
-        logI("\u4E0B\u8F7D\u6700\u540E\u4E00\u6279\u672A\u4E0B\u8F7D\u7684\u8282\u70B9");
-        await downloadAllAndClear("\u6536\u5C3E");
+    };
+  }
+  async function boot() {
+    if (!document.body) {
+      setTimeout(() => void boot(), 100);
+      return;
+    }
+    const host = document.createElement("div");
+    host.id = "amz-category-insights-v7";
+    document.body.append(host);
+    const root = host.attachShadow({ mode: "open" });
+    root.innerHTML = `<style>
+    :host{all:initial}*{box-sizing:border-box}#panel{position:fixed;top:10px;left:10px;z-index:2147483646;background:rgba(20,20,20,.95);color:#eee;font:12px Arial,sans-serif;padding:8px;border-radius:6px;box-shadow:0 4px 12px #0008;width:min(470px,calc(100vw - 20px));height:min(620px,92vh);min-height:330px;resize:vertical;overflow:hidden;display:flex;flex-direction:column}
+    #header{display:flex;justify-content:space-between;gap:6px;cursor:move;font-weight:bold;margin-bottom:6px}#stats{font-size:11px;color:#9ccc65;font-weight:normal}#config{background:#ffffff10;padding:6px;border-radius:4px} .row{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:4px 0}label{display:inline-flex;align-items:center;gap:3px}input[type=number]{width:52px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:2px;font:inherit}input[type=checkbox]{margin:0}button{font:inherit;border:1px solid #555;background:#333;color:#fff;border-radius:4px;padding:3px 6px;cursor:pointer}button:disabled{opacity:.5;cursor:default}.primary{background:#388e3c}.danger{background:#b71c1c}.warn{background:#a45a00}#progress,#preview{font-size:11px;color:#90caf9;overflow-wrap:anywhere;margin-top:5px}#list{flex:1;min-height:50px;overflow:auto}.node{border:1px solid #555;border-radius:4px;padding:5px;margin:4px 0}.name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.small{font-size:11px;color:#aaa;overflow-wrap:anywhere}.tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}.tag{font-size:10px;padding:2px 4px;background:#444;border-radius:3px}.data{background:#1565c0}.empty,.no-content{background:#6d4c41}.failed,.interrupted{background:#b71c1c}.pending{background:#555}#loghead{display:flex;align-items:center;justify-content:space-between;margin:6px 0 3px}#logs{height:150px;min-height:60px;overflow:auto;flex-shrink:0;background:#0006;padding:4px 6px;font:11px/1.5 Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.I{color:#c8e6c9}.W{color:#ffd54f}.E{color:#ff8a80}
+    #panel[hidden],#restore-title[hidden]{display:none}#header,#config,#actions{flex-shrink:0}#header{align-items:center}#header>span:first-child{min-width:0;flex:1}#minimize{flex-shrink:0;padding:0 5px;font-size:15px;line-height:18px}#workspace{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}#list{min-height:0}#log-section{display:flex;flex-direction:column;min-height:0;overflow:hidden}#loghead{flex-shrink:0;margin-top:0}#logs{flex:1;min-height:0;height:auto}#divider{height:10px;flex:0 0 10px;cursor:row-resize;touch-action:none;display:flex;align-items:center;justify-content:center;outline:none}#divider:before{content:'';height:3px;width:64px;border-radius:3px;background:#777}#divider:hover:before,#divider:focus-visible:before{background:#90caf9}#workspace.resizing{user-select:none;cursor:row-resize}#restore-title{position:fixed;z-index:2147483646;max-width:calc(100vw - 20px);padding:7px 10px;background:rgba(20,20,20,.95);color:#eee;border:1px solid #666;box-shadow:0 3px 8px #0006;font:bold 12px Arial,sans-serif;text-align:left}
+    </style><button id="restore-title" type="button" hidden aria-label="\u6062\u590D\u91C7\u96C6\u6D6E\u7A97">Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION}</button><section id="panel"><header id="header"><span>Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION}</span><span id="stats"></span><button id="minimize" type="button" title="\u6700\u5C0F\u5316" aria-label="\u6700\u5C0F\u5316\u91C7\u96C6\u6D6E\u7A97">\u2212</button></header>
+    <div id="config"><div class="row">\u81EA\u52A8\u904D\u5386\uFF1A${["store", "category", "ptype", "keyword"].map((k) => `<label><input type="checkbox" data-level="${k}" ${config.levels[k] ? "checked" : ""}>${groupLabels[k]}</label>`).join("")}</div>
+    <div class="row">\u6BCF\u6279\u4E0B\u8F7D <input id="target" type="number" min="1" value="50"> \u4E2A\u8282\u70B9\u3000\u603B\u6570\u91CF <input id="limit" type="number" min="0" value="0"> \u4E2A\u8282\u70B9\uFF080=\u4E0D\u9650\uFF09</div>
+    <div class="row">\u8282\u70B9\u95F4\u968F\u673A\u5EF6\u8FDF <input id="min" type="number" min="15" value="15"> \uFF5E <input id="max" type="number" min="15" value="45"> \u79D2\uFF08\u6700\u4F4E15\u79D2\uFF09</div>
+    <div class="row"><button id="start" class="primary">\u5F00\u59CB\u6293\u53D6</button><button id="stop" class="warn">\u7EC8\u6B62\u6293\u53D6</button><button id="resume">\u7EE7\u7EED\u672A\u5B8C\u6210\u4EFB\u52A1</button></div><div id="preview"></div><div id="progress"></div></div>
+    <div id="actions" class="row"><button id="all">\u5168\u9009</button><button id="invert">\u53CD\u9009</button><button id="download" class="primary">\u4E0B\u8F7D\u9009\u4E2D</button><button id="delete" class="danger">\u5220\u9664\u9009\u4E2D</button><button id="delete-all" class="danger">\u5220\u9664\u5168\u90E8</button></div>
+    <div id="workspace"><div id="list"></div><div id="divider" role="separator" tabindex="0" aria-label="\u8C03\u6574\u8282\u70B9\u5217\u8868\u4E0E\u8FD0\u884C\u65E5\u5FD7\u9AD8\u5EA6" aria-orientation="horizontal" aria-controls="list log-section" title="\u62D6\u52A8\u8C03\u6574\u5217\u8868\u548C\u65E5\u5FD7\u9AD8\u5EA6\uFF1B\u652F\u6301\u4E0A\u4E0B\u65B9\u5411\u952E"></div><div id="log-section"><div id="loghead"><b>\u8FD0\u884C\u65E5\u5FD7</b><div><button id="log-download">\u4E0B\u8F7D\u65E5\u5FD7</button> <button id="log-clear">\u6E05\u7A7A\u65E5\u5FD7</button></div></div><div id="logs"></div></div></div></section>`;
+    const element = (id) => root.getElementById(id);
+    const input = (id) => element(id);
+    const button = (id, fn) => element(id).onclick = safe(fn);
+    const selected = () => engine.visible().filter((b) => b.checked).map((b) => b.key);
+    const updateConfig = () => {
+      config = normalizeConfig({ ...config, target: Number(input("target").value), totalLimit: Number(input("limit").value), delayMin: Number(input("min").value), delayMax: Number(input("max").value) });
+      input("target").value = String(config.target);
+      input("limit").value = String(config.totalLimit);
+      input("min").value = String(config.delayMin);
+      input("max").value = String(config.delayMax);
+      render();
+    };
+    for (const id of ["target", "limit", "min", "max"]) input(id).onchange = updateConfig;
+    for (const cb of root.querySelectorAll("[data-level]")) cb.onchange = () => {
+      const k = cb.dataset.level, i2 = LEVELS.indexOf(k);
+      config.levels[k] = cb.checked;
+      if (cb.checked) for (let j = 0; j < i2; j++) config.levels[LEVELS[j]] = true;
+      else for (let j = i2 + 1; j < LEVELS.length; j++) config.levels[LEVELS[j]] = false;
+      config = normalizeConfig(config);
+      render();
+    };
+    button("start", () => {
+      updateConfig();
+      return start();
+    });
+    button("stop", () => engine.stop());
+    button("resume", () => start(true));
+    button("all", () => {
+      for (const b of engine.visible()) b.checked = true;
+      render();
+    });
+    button("invert", () => {
+      for (const b of engine.visible()) b.checked = !b.checked;
+      render();
+    });
+    button("download", () => {
+      const keys = selected();
+      if (!keys.length) {
+        log("W", "\u8BF7\u5148\u9009\u62E9\u8282\u70B9");
+        return;
       }
-      engine.transition = false;
-      AUTO.running = false;
-      AUTO.stopping = false;
-      logI(`===== \u81EA\u52A8\u6293\u53D6\u7ED3\u675F\uFF5C\u672C\u6B21\u5171\u6293\u53D6 ${AUTO.totalCaptured} \u4E2A\u8282\u70B9 =====`);
-      syncAutoUI();
-      updateProgress();
-    }
-    function stopAuto() {
-      if (!AUTO.running) return;
-      AUTO.stopping = true;
-      logI("\u5DF2\u8BF7\u6C42\u7EC8\u6B62\uFF1A\u6B63\u5728\u5FEB\u901F\u6536\u5C3E\u5E76\u4E0B\u8F7D\u5269\u4F59\u6570\u636E\u2026");
-      syncAutoUI();
-    }
-    let panel, listBox, statsEl, progEl, startBtn, stopBtn;
-    let targetInput, totalInput, dMinInput, dMaxInput;
-    const lvBoxes = {};
-    function syncDelayUI() {
-      if (dMinInput) dMinInput.value = String(AUTO.delayMin);
-      if (dMaxInput) dMaxInput.value = String(AUTO.delayMax);
-      logI(`\u968F\u673A\u5EF6\u8FDF\u8BBE\u4E3A ${AUTO.delayMin}~${AUTO.delayMax} \u79D2`);
-    }
-    function styleBtn(b, variant) {
-      let bd = "#555", bg = "#333";
-      if (variant === "primary") {
-        bd = "#4caf50";
-        bg = "#4caf50";
-      } else if (variant === "danger") {
-        bd = "#e53935";
-        bg = "#c62828";
-      } else if (variant === "warn") {
-        bd = "#fb8c00";
-        bg = "#ef6c00";
-      }
-      Object.assign(b.style, {
-        fontSize: "12px",
-        cursor: "pointer",
-        borderRadius: "4px",
-        border: "1px solid " + bd,
-        padding: "2px 6px",
-        background: bg,
-        color: "#fff"
-      });
-    }
-    function styleTag(t, on) {
-      Object.assign(t.style, {
-        fontSize: "11px",
-        padding: "1px 4px",
-        borderRadius: "4px",
-        color: "#fff",
-        background: on ? "#1e88e5" : "#555",
-        border: "1px solid " + (on ? "#2196f3" : "#444"),
-        whiteSpace: "nowrap"
-      });
-    }
-    function createPanel() {
-      if (panel) return;
-      panel = document.createElement("div");
-      Object.assign(panel.style, {
-        position: "fixed",
-        top: "10px",
-        left: "10px",
-        zIndex: "999999",
-        background: "rgba(20,20,20,0.94)",
-        color: "#fff",
-        fontSize: "12px",
-        padding: "8px",
-        borderRadius: "6px",
-        boxShadow: "0 4px 12px rgba(0,0,0,.6)",
-        display: "flex",
-        flexDirection: "column",
-        minWidth: "430px",
-        width: "450px",
-        height: "560px",
-        minHeight: "300px",
-        maxHeight: "92vh",
-        resize: "vertical",
-        overflow: "hidden"
-      });
-      const header = document.createElement("div");
-      Object.assign(header.style, {
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: "8px",
-        fontWeight: "bold",
-        marginBottom: "6px",
-        cursor: "move",
-        fontSize: "13px",
-        flex: "0 0 auto"
-      });
-      const title = document.createElement("span");
-      title.textContent = `Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION}`;
-      statsEl = document.createElement("span");
-      Object.assign(statsEl.style, {
-        fontWeight: "normal",
-        fontSize: "11px",
-        color: "#9ccc65",
-        whiteSpace: "nowrap"
-      });
-      header.appendChild(title);
-      header.appendChild(statsEl);
-      const cfg = document.createElement("div");
-      Object.assign(cfg.style, {
-        flex: "0 0 auto",
-        marginBottom: "6px",
-        padding: "6px",
-        background: "rgba(255,255,255,.06)",
-        borderRadius: "4px"
-      });
-      const row1 = document.createElement("div");
-      Object.assign(row1.style, {
-        display: "flex",
-        alignItems: "center",
-        gap: "10px",
-        flexWrap: "wrap",
-        marginBottom: "5px"
-      });
-      const lab = document.createElement("span");
-      lab.textContent = "\u81EA\u52A8\u5207\u6362\uFF1A";
-      lab.style.color = "#bbb";
-      row1.appendChild(lab);
-      [["store", "\u5546\u5E97"], ["category", "\u7C7B\u522B"], ["ptype", "\u5546\u54C1\u7C7B\u578B"], ["keyword", "\u5173\u952E\u8BCD"]].forEach(([k, cn]) => {
-        const w = document.createElement("label");
-        Object.assign(w.style, {
-          display: "flex",
-          alignItems: "center",
-          gap: "3px",
-          cursor: "pointer",
-          userSelect: "none"
-        });
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = AUTO.levels[k];
-        cb.style.margin = "0";
-        cb.onchange = () => {
-          AUTO.levels[k] = cb.checked;
-          normalizeLevels(k);
-        };
-        lvBoxes[k] = cb;
-        const s = document.createElement("span");
-        s.textContent = cn;
-        w.appendChild(cb);
-        w.appendChild(s);
-        row1.appendChild(w);
-      });
-      function mkNum(value, width, onCommit) {
-        const i2 = document.createElement("input");
-        i2.type = "number";
-        i2.value = String(value);
-        Object.assign(i2.style, {
-          width: (width || 46) + "px",
-          fontSize: "12px",
-          padding: "1px 4px",
-          borderRadius: "3px",
-          border: "1px solid #555",
-          background: "#222",
-          color: "#fff"
-        });
-        i2.onchange = () => onCommit(parseInt(i2.value, 10), i2);
-        return i2;
-      }
-      function mkLabel(text) {
-        const s = document.createElement("span");
-        s.textContent = text;
-        s.style.color = "#bbb";
-        return s;
-      }
-      const row2 = document.createElement("div");
-      Object.assign(row2.style, {
-        display: "flex",
-        alignItems: "center",
-        gap: "5px",
-        flexWrap: "wrap",
-        marginBottom: "5px"
-      });
-      targetInput = mkNum(AUTO.target, 46, (v) => {
-        AUTO.target = v > 0 ? v : 50;
-        targetInput.value = String(AUTO.target);
-        logI(`\u6BCF\u6279\u4E0B\u8F7D\u6570\u91CF\u8BBE\u4E3A ${AUTO.target} \u4E2A\u8282\u70B9`);
-      });
-      totalInput = mkNum(AUTO.totalLimit, 46, (v) => {
-        AUTO.totalLimit = Number.isFinite(v) && v > 0 ? v : 0;
-        totalInput.value = String(AUTO.totalLimit);
-        logI(AUTO.totalLimit ? `\u672C\u6B21\u603B\u91CF\u4E0A\u9650\u8BBE\u4E3A ${AUTO.totalLimit} \u4E2A\u8282\u70B9` : "\u672C\u6B21\u603B\u91CF\u5DF2\u8BBE\u4E3A\u4E0D\u9650\u5236");
-      });
-      dMinInput = mkNum(AUTO.delayMin, 40, (v) => {
-        let x2 = Number.isFinite(v) ? v : AUTO.delayMin;
-        if (x2 < DELAY_FLOOR) {
-          x2 = DELAY_FLOOR;
-          logW(`\u5EF6\u8FDF\u4E0B\u9650\u4E0D\u5F97\u4F4E\u4E8E ${DELAY_FLOOR} \u79D2\uFF0C\u5DF2\u4FEE\u6B63`);
-        }
-        AUTO.delayMin = x2;
-        if (AUTO.delayMax < AUTO.delayMin) {
-          AUTO.delayMax = AUTO.delayMin;
-          logW(`\u5EF6\u8FDF\u4E0A\u9650\u5C0F\u4E8E\u4E0B\u9650\uFF0C\u5DF2\u540C\u6B65\u8C03\u6574\u4E3A ${AUTO.delayMax} \u79D2`);
-        }
-        syncDelayUI();
-      });
-      dMaxInput = mkNum(AUTO.delayMax, 40, (v) => {
-        let x2 = Number.isFinite(v) ? v : AUTO.delayMax;
-        if (x2 < DELAY_FLOOR) {
-          x2 = DELAY_FLOOR;
-          logW(`\u5EF6\u8FDF\u4E0A\u9650\u4E0D\u5F97\u4F4E\u4E8E ${DELAY_FLOOR} \u79D2\uFF0C\u5DF2\u4FEE\u6B63`);
-        }
-        if (x2 < AUTO.delayMin) {
-          x2 = AUTO.delayMin;
-          logW(`\u5EF6\u8FDF\u4E0A\u9650\u4E0D\u5F97\u5C0F\u4E8E\u4E0B\u9650\uFF0C\u5DF2\u4FEE\u6B63\u4E3A ${x2} \u79D2`);
-        }
-        AUTO.delayMax = x2;
-        syncDelayUI();
-      });
-      row2.append(
-        mkLabel("\u6BCF\u6279\u4E0B\u8F7D"),
-        targetInput,
-        mkLabel("\u4E2A\u8282\u70B9"),
-        mkLabel("\u3000\u603B\u6570\u91CF"),
-        totalInput,
-        mkLabel("\u4E2A\u8282\u70B9\uFF080 = \u4E0D\u9650\u5236\uFF09")
-      );
-      const rowDelay = document.createElement("div");
-      Object.assign(rowDelay.style, {
-        display: "flex",
-        alignItems: "center",
-        gap: "5px",
-        flexWrap: "wrap",
-        marginBottom: "5px"
-      });
-      rowDelay.append(
-        mkLabel("\u968F\u673A\u5EF6\u8FDF"),
-        dMinInput,
-        mkLabel("~"),
-        dMaxInput,
-        mkLabel(`\u79D2\uFF08\u6700\u4F4E ${DELAY_FLOOR} \u79D2\uFF09`)
-      );
-      const row3 = document.createElement("div");
-      Object.assign(row3.style, { display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" });
-      startBtn = document.createElement("button");
-      startBtn.textContent = "\u5F00\u59CB\u81EA\u52A8\u6293\u53D6";
-      styleBtn(startBtn, "primary");
-      startBtn.onclick = () => {
-        if (!AUTO.running) autoRun();
-      };
-      stopBtn = document.createElement("button");
-      stopBtn.textContent = "\u7EC8\u6B62\u81EA\u52A8\u6293\u53D6";
-      styleBtn(stopBtn, "warn");
-      stopBtn.onclick = stopAuto;
-      row3.append(startBtn, stopBtn);
-      progEl = document.createElement("div");
-      Object.assign(progEl.style, { marginTop: "5px", fontSize: "11px", color: "#90caf9" });
-      cfg.append(row1, row2, rowDelay, row3, progEl);
-      const bar = document.createElement("div");
-      Object.assign(bar.style, {
-        marginBottom: "6px",
-        display: "flex",
-        gap: "4px",
-        flexWrap: "wrap",
-        flex: "0 0 auto"
-      });
-      const bAll = document.createElement("button");
-      bAll.textContent = "\u5168\u9009";
-      styleBtn(bAll);
-      bAll.onclick = () => {
-        Object.values(batches).forEach((b) => b.checked = true);
-        refreshList();
-      };
-      const bInv = document.createElement("button");
-      bInv.textContent = "\u53CD\u9009";
-      styleBtn(bInv);
-      bInv.onclick = () => {
-        Object.values(batches).forEach((b) => b.checked = !b.checked);
-        refreshList();
-      };
-      const bDl = document.createElement("button");
-      bDl.textContent = "\u4E0B\u8F7D\u9009\u4E2D";
-      styleBtn(bDl, "primary");
-      bDl.onclick = async () => {
-        const sel = Object.values(batches).filter((b) => b.checked);
-        if (!sel.length) {
-          alert("\u8BF7\u5148\u52FE\u9009\u81F3\u5C11\u4E00\u4E2A\u6279\u6B21");
-          return;
-        }
-        await downloadBatches(sel, "\u624B\u52A8");
-      };
-      const bDel = document.createElement("button");
-      bDel.textContent = "\u9690\u85CF\u9009\u4E2D";
-      styleBtn(bDel, "danger");
-      bDel.onclick = () => {
-        const ids = Object.keys(batches).filter((id) => batches[id].checked);
-        if (!ids.length) {
-          alert("\u8BF7\u5148\u52FE\u9009\u81F3\u5C11\u4E00\u4E2A\u6279\u6B21");
-          return;
-        }
-        if (!confirm(`\u9690\u85CF\u9009\u4E2D\u7684 ${ids.length} \u4E2A\u6279\u6B21\uFF1F\u6570\u636E\u4ECD\u53EF\u8865\u4E0B\u8F7D\u3002`)) return;
-        ids.forEach((id) => {
-          processedNodeIds.add(id);
-          delete batches[id];
-        });
-        logI(`\u5DF2\u9690\u85CF ${ids.length} \u4E2A\u6279\u6B21\uFF08\u4FDD\u7559\u672C\u5730\u5B58\u50A8\uFF09`);
-        refreshList();
-      };
-      const bClr = document.createElement("button");
-      bClr.textContent = "\u9690\u85CF\u5168\u90E8";
-      styleBtn(bClr, "danger");
-      bClr.onclick = () => {
-        if (!Object.keys(batches).length) return;
-        if (confirm("\u9690\u85CF\u5F53\u524D\u5217\u8868\uFF1F\u672C\u5730\u8BB0\u5F55\u4FDD\u7559\uFF0C\u53EF\u8865\u4E0B\u8F7D\u3002")) clearAll();
-      };
-      const bIsolation = document.createElement("button");
-      bIsolation.textContent = "\u4E0B\u8F7D\u9694\u79BB\u5305";
-      styleBtn(bIsolation);
-      bIsolation.onclick = () => exportQuarantine().catch((e) => logE(e.message));
-      const bHistory = document.createElement("button");
-      bHistory.textContent = "\u5386\u53F2\u8865\u4E0B\u8F7D";
-      styleBtn(bHistory);
-      bHistory.onclick = () => downloadBatches([...engine.batches.values()], "\u5386\u53F2", false).catch((e) => logE(e.message));
-      const bRetry = document.createElement("button");
-      bRetry.textContent = "\u8865\u91C7\u5F53\u524D\u8282\u70B9";
-      styleBtn(bRetry);
-      bRetry.onclick = () => {
-        if (AUTO.running) return logW("\u8BF7\u5148\u7EC8\u6B62\u81EA\u52A8\u91C7\u96C6");
-        const b = engine.begin(readContext(), true);
-        if (b) {
-          const k = readFilter(F.keyword);
-          clickBoundKeyword(k.el);
-          logI("\u5DF2\u65B0\u5EFA\u8865\u91C7\u8F6E\u6B21\u5E76\u70B9\u51FB\u5F53\u524D\u5173\u952E\u8BCD\uFF1B\u82E5\u9875\u9762\u672A\u91CD\u53D1\u8BF7\u6C42\uFF0C\u8BF7\u5207\u6362\u5230\u5176\u4ED6\u5173\u952E\u8BCD\u518D\u5207\u56DE");
-        }
-      };
-      bar.append(bAll, bInv, bDl, bDel, bClr, bIsolation, bHistory, bRetry);
-      listBox = document.createElement("div");
-      Object.assign(listBox.style, { flex: "1 1 auto", minHeight: "0", overflowY: "auto" });
-      const logHead = document.createElement("div");
-      Object.assign(logHead.style, {
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        margin: "6px 0 3px",
-        flex: "0 0 auto"
-      });
-      const lt = document.createElement("span");
-      lt.textContent = "\u8FD0\u884C\u65E5\u5FD7";
-      lt.style.fontWeight = "bold";
-      const lbtns = document.createElement("div");
-      lbtns.style.display = "flex";
-      lbtns.style.gap = "4px";
-      const bLogDl = document.createElement("button");
-      bLogDl.textContent = "\u4E0B\u8F7D\u65E5\u5FD7";
-      styleBtn(bLogDl);
-      bLogDl.onclick = downloadLog;
-      const bLogClr = document.createElement("button");
-      bLogClr.textContent = "\u6E05\u7A7A\u65E5\u5FD7";
-      styleBtn(bLogClr);
-      bLogClr.onclick = () => {
-        logs.length = 0;
-        logBox.innerHTML = "";
-      };
-      lbtns.append(bLogDl, bLogClr);
-      logHead.append(lt, lbtns);
-      logBox = document.createElement("div");
-      Object.assign(logBox.style, {
-        flex: "0 0 150px",
-        minHeight: "60px",
-        overflowY: "auto",
-        background: "rgba(0,0,0,.45)",
-        borderRadius: "4px",
-        padding: "4px 6px",
-        fontFamily: "Consolas,Monaco,monospace",
-        fontSize: "11px",
-        lineHeight: "1.5"
-      });
-      panel.append(header, cfg, bar, listBox, logHead, logBox);
-      document.body.appendChild(panel);
-      makeDraggable(panel, header);
-      logs.forEach((l) => {
-        const d = document.createElement("div");
-        d.textContent = `[${l.ts}] ${l.msg}`;
-        d.style.color = l.level === "E" ? "#ff8a80" : l.level === "W" ? "#ffd54f" : "#c8e6c9";
-        logBox.appendChild(d);
-      });
-      syncLevelUI();
-      syncAutoUI();
-      refreshList();
-      logI(`\u811A\u672C\u5DF2\u5C31\u7EEA v${VERSION}\uFF1B\u5F52\u5C5E\u4E0D\u660E\u786E\u7684\u54CD\u5E94\u5C06\u9694\u79BB`);
-    }
-    function makeDraggable(el, handle) {
-      let ox = 0, oy = 0, on = false;
-      handle.addEventListener("mousedown", (e) => {
-        if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT") return;
-        on = true;
-        const rect = el.getBoundingClientRect();
-        ox = e.clientX - rect.left;
-        oy = e.clientY - rect.top;
-        document.addEventListener("mousemove", mv);
-        document.addEventListener("mouseup", up);
-        e.preventDefault();
-      });
-      function mv(e) {
-        if (!on) return;
-        el.style.left = e.clientX - ox + "px";
-        el.style.top = e.clientY - oy + "px";
-      }
-      function up() {
-        on = false;
-        document.removeEventListener("mousemove", mv);
-        document.removeEventListener("mouseup", up);
-      }
-    }
-    function syncLevelUI() {
-      Object.entries(lvBoxes).forEach(([k, cb]) => {
-        cb.checked = AUTO.levels[k];
-        cb.disabled = k === "keyword" || AUTO.running;
-      });
-    }
-    function syncAutoUI() {
-      if (!startBtn) return;
-      startBtn.disabled = AUTO.running;
-      startBtn.style.opacity = AUTO.running ? ".5" : "1";
-      startBtn.textContent = AUTO.running ? "\u6293\u53D6\u4E2D\u2026" : "\u5F00\u59CB\u81EA\u52A8\u6293\u53D6";
-      stopBtn.disabled = !AUTO.running;
-      stopBtn.style.opacity = AUTO.running ? "1" : ".5";
-      stopBtn.textContent = AUTO.stopping ? "\u6B63\u5728\u7EC8\u6B62\u2026" : "\u7EC8\u6B62\u81EA\u52A8\u6293\u53D6";
-      [targetInput, totalInput, dMinInput, dMaxInput].forEach((i2) => {
-        if (i2) {
-          i2.disabled = AUTO.running;
-          i2.style.opacity = AUTO.running ? ".55" : "1";
-        }
-      });
-      syncLevelUI();
-    }
-    function updateProgress() {
-      if (!progEl) return;
-      const c = readContext();
-      progEl.textContent = `\u5173\u952E\u8BCD ${c.keyword.index}/${c.keyword.total}\u3000\u5546\u54C1\u7C7B\u578B ${c.product_type.index}/${c.product_type.total}\u3000\u7C7B\u522B ${c.category.index}/${c.category.total}\u3000\u5546\u5E97 ${c.store.index}/${c.store.total}` + (AUTO.running ? `\u3000\uFF5C\u672C\u6B21\u5DF2\u6293 ${AUTO.totalCaptured}` + (AUTO.totalLimit > 0 ? ` / ${AUTO.totalLimit}` : "") : "");
-    }
-    function updateStats() {
-      if (!statsEl) return;
-      const ids = Object.keys(batches);
-      let files = 0, bytes = 0;
-      ids.forEach((id) => Object.values(batches[id].files).forEach((f) => {
-        files++;
-        bytes += f.blob.size;
+      return downloads.batches(keys);
+    });
+    const remove = async (keys) => {
+      if (keys.length && confirm(`\u786E\u8BA4\u5B8C\u5168\u5220\u9664\u5F53\u524D\u5217\u8868\u4E2D\u7684 ${keys.length}\u4E2A\u8282\u70B9\u8BB0\u5F55\u53CA\u5176 IndexedDB \u6570\u636E\uFF1F\u5220\u9664\u540E\u4E0D\u80FD\u8865\u4E0B\u8F7D\uFF0C\u5DF2\u4E0B\u8F7D\u5230\u78C1\u76D8\u7684\u6587\u4EF6\u4E0D\u53D7\u5F71\u54CD\u3002`)) await engine.remove(keys);
+    };
+    button("delete", () => remove(selected()));
+    button("delete-all", () => remove(engine.visible().map((b) => b.key)));
+    button("log-download", () => saveAs(new Blob([`Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION}
+\u9875\u9762\uFF1A${location.href}
+${logs.map((l) => `[${l.at}] [${l.level}] ${l.message}`).join("\n")}`], { type: "text/plain;charset=utf-8" }), `\u7C7B\u76EE\u6570\u636E\u6293\u53D6_v${VERSION}_${stamp()}.log`));
+    button("log-clear", () => {
+      logs.length = 0;
+      renderLog();
+    });
+    renderLog = () => {
+      const box = element("logs"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30, scroll = box.scrollTop;
+      box.replaceChildren(...logs.slice(-800).map((l) => {
+        const el = document.createElement("div");
+        el.className = l.level;
+        el.textContent = `[${l.at.slice(11, 23)}] ${l.message}`;
+        return el;
       }));
-      statsEl.textContent = `\u6279\u6B21 ${ids.length} \xB7 \u9694\u79BB ${engine.quarantines.size} \xB7 \u6587\u4EF6 ${files} \xB7 ${formatBytes(bytes)}`;
-    }
-    function refreshList() {
-      if (!listBox) return;
-      updateStats();
-      updateProgress();
-      const savedScroll = listBox.scrollTop;
-      listBox.innerHTML = "";
-      const ids = Object.keys(batches).sort((a, b) => (batches[b].updatedAt || batches[b].createdAt) - (batches[a].updatedAt || batches[a].createdAt));
-      if (!ids.length) {
-        const e = document.createElement("div");
-        e.textContent = "\u6682\u65E0\u6570\u636E\uFF0C\u5207\u6362\u7C7B\u76EE\u8282\u70B9\u540E\u4F1A\u663E\u793A\u6293\u53D6\u7ED3\u679C\u3002";
-        e.style.color = "#ccc";
-        listBox.appendChild(e);
-        return;
+      box.scrollTop = atBottom ? box.scrollHeight : scroll;
+    };
+    const row = (b) => {
+      const div = document.createElement("div");
+      div.className = "node";
+      div.dataset.key = b.key;
+      const top = document.createElement("div");
+      top.className = "row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = b.checked;
+      cb.onchange = () => {
+        b.checked = cb.checked;
+      };
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = `${b.ctx.keyword.label}\uFF08${b.nodeId}\uFF09[${Object.keys(b.files).length}/4]`;
+      name.title = contextLabel(b.ctx);
+      const dl = document.createElement("button");
+      dl.textContent = "\u4E0B\u8F7D";
+      dl.onclick = safe(() => downloads.batches([b.key], "\u5355\u8282\u70B9"));
+      const del = document.createElement("button");
+      del.textContent = "\u5220\u9664";
+      del.onclick = safe(() => remove([b.key]));
+      top.append(cb, name, dl, del);
+      const sub = document.createElement("div");
+      sub.className = "small";
+      sub.textContent = `${b.ctx.category.label} / ${b.ctx.product_type.label}\uFF5C${nodeStatus(b)}`;
+      const tags = document.createElement("div");
+      tags.className = "tags";
+      for (const k of KINDS) {
+        const t = document.createElement("span"), o = b.outcomes?.[k];
+        t.className = `tag ${o?.status || "pending"}`;
+        t.textContent = `${LABELS[k]}\uFF1A${{ data: "\u6709\u6570\u636E", empty: "\u65E0\u6570\u636E", "no-content": "\u65E0\u6B63\u6587", failed: "\u5931\u8D25", interrupted: "\u4E2D\u65AD", pending: "\u8BF7\u6C42\u4E2D" }[o?.status || "pending"]}`;
+        t.title = o?.reason || "";
+        tags.append(t);
       }
-      ids.forEach((nodeId) => {
-        const b = batches[nodeId];
-        const w = document.createElement("div");
-        Object.assign(w.style, {
-          border: "1px solid #555",
-          padding: "4px 6px",
-          marginBottom: "4px",
-          borderRadius: "4px",
-          background: "rgba(40,40,40,.9)"
-        });
-        const r1 = document.createElement("div");
-        Object.assign(r1.style, {
-          display: "grid",
-          gridTemplateColumns: "20px 1fr auto auto",
-          alignItems: "center",
-          columnGap: "6px"
-        });
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = !!b.checked;
-        cb.style.margin = "0 auto";
-        cb.onchange = () => {
-          b.checked = cb.checked;
-        };
-        const kwName = b.ctx && b.ctx.keyword && b.ctx.keyword.label || b.nodeId;
-        const fileCount = Object.keys(b.files).length;
-        const lb = document.createElement("div");
-        lb.textContent = `${kwName}\uFF08${b.nodeId}\uFF09[${fileCount}/4]${b.timedOut ? " \u7F3A\u5931" : ""}${b.supplementOf ? " \u8865\u5145" : ""}`;
-        if (b.ctx && b.ctx.store) {
-          lb.title = [
-            b.ctx.store.label,
-            b.ctx.category.label,
-            b.ctx.product_type.label,
-            b.ctx.keyword.label
-          ].join(" / ");
-        }
-        Object.assign(lb.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
-        const bd = document.createElement("button");
-        bd.textContent = "\u4E0B\u8F7D";
-        styleBtn(bd);
-        bd.onclick = () => downloadSingle(nodeId);
-        const bx = document.createElement("button");
-        bx.textContent = "\u9690\u85CF";
-        styleBtn(bx);
-        bx.onclick = () => {
-          delete batches[nodeId];
-          processedNodeIds.add(nodeId);
-          logI(`\u5DF2\u9690\u85CF\u6279\u6B21\uFF08\u4FDD\u7559\u672C\u5730\u8BB0\u5F55\uFF09`);
-          refreshList();
-        };
-        r1.append(cb, lb, bd, bx);
-        const r15 = document.createElement("div");
-        const catName = b.ctx && b.ctx.category && b.ctx.category.label || "-";
-        const pdtName = b.ctx && b.ctx.product_type && b.ctx.product_type.label || "-";
-        r15.textContent = `${catName} / ${pdtName}`;
-        Object.assign(r15.style, {
-          fontSize: "10px",
-          color: "#9e9e9e",
-          margin: "2px 0 0 20px",
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis"
-        });
-        const r2 = document.createElement("div");
-        Object.assign(r2.style, {
-          display: "grid",
-          gridTemplateColumns: "20px repeat(4,auto)",
-          alignItems: "center",
-          columnGap: "4px",
-          marginTop: "3px"
-        });
-        r2.appendChild(document.createElement("div"));
-        TYPE_LABELS.forEach((t) => {
-          const tag = document.createElement("div");
-          tag.textContent = t.label;
-          styleTag(tag, !!b.files[t.key]);
-          r2.appendChild(tag);
-        });
-        w.append(r1, r15, r2);
-        listBox.appendChild(w);
-      });
-      listBox.scrollTop = savedScroll;
-    }
-    function snapshotContext() {
-      try {
-        return readContext();
-      } catch {
-        return { store: { value: "", label: "" }, category: { value: "", label: "" }, product_type: { value: "", label: "" }, keyword: { value: "", label: "" }, nodeId: null };
+      div.append(top, sub, tags);
+      return div;
+    };
+    render = () => {
+      const running = engine.running, visible = engine.visible();
+      element("stats").textContent = `\u8282\u70B9 ${visible.length} \xB7 \u6587\u4EF6 ${visible.reduce((s, b) => s + Object.keys(b.files).length, 0)}`;
+      for (const cb of root.querySelectorAll("[data-level]")) {
+        const k = cb.dataset.level;
+        cb.checked = config.levels[k];
+        cb.disabled = k === "keyword" || running;
       }
-    }
-    function bodyForObservation(body) {
-      if (body instanceof FormData) return Object.fromEntries(body.entries());
-      if (body instanceof Blob) return body.text();
-      return body;
-    }
-    function guardedFinish(ticket, status, text) {
-      return Promise.resolve(ticket).then((t) => engine.finish(t, status, text)).catch((e) => {
-        logE(`\u76D1\u542C\u5931\u8D25\uFF1A${e.message}`);
-      });
-    }
-    const origFetch = window.fetch;
-    window.fetch = function(input, init) {
-      const url = toUrlString(input);
-      let target = false;
-      try {
-        target = !!endpoint(url);
-      } catch {
-      }
-      if (!target) return origFetch.apply(this, arguments);
-      const ctx = snapshotContext(), started = Date.now();
-      let body;
-      try {
-        body = init && Object.hasOwn(init, "body") ? bodyForObservation(init.body) : input instanceof Request ? input.clone().text() : null;
-      } catch {
-        body = null;
-      }
-      let ticket;
-      if (body && typeof body.then === "function") {
-        const dispatch = engine.reserve();
-        ticket = Promise.resolve(body).then((value) => engine.start(url, value, ctx, started, dispatch), () => engine.start(url, null, ctx, started, dispatch));
-      } else ticket = engine.start(url, body, ctx, started);
-      let result;
-      try {
-        result = origFetch.apply(this, arguments);
-      } catch (e) {
-        guardedFinish(ticket, 0, "");
-        throw e;
-      }
-      result.then((response) => {
+      for (const id of ["target", "limit", "min", "max"]) input(id).disabled = running;
+      element("start").disabled = running || !initialized;
+      element("stop").disabled = !running;
+      element("resume").disabled = running || !initialized || !engine.task;
+      element("start").textContent = running ? "\u6293\u53D6\u4E2D\u2026" : "\u5F00\u59CB\u6293\u53D6";
+      let c = engine.task?.current || engine.task?.start;
+      if (!running) {
         try {
-          return response.clone().text().then((raw) => guardedFinish(ticket, response.status, raw), () => guardedFinish(ticket, response.status, ""));
+          const gui = readContext();
+          element("preview").textContent = `\u8D77\u70B9\uFF1A${contextLabel(gui)}\uFF5C\u4ECE\u5F53\u524D\u9879\u5230\u672B\u5C3E`;
+        } catch (e) {
+          element("preview").textContent = String(e);
+        }
+      } else element("preview").textContent = `\u5F53\u524D\uFF1A${c ? contextLabel(c) : "\u9A8C\u8BC1\u8D77\u70B9\u76EE\u5F55"}\uFF5C\u4EFB\u52A1\u8303\u56F4\u5DF2\u9501\u5B9A`;
+      if (!c) {
+        try {
+          c = readContext();
         } catch {
-          return guardedFinish(ticket, response.status, "");
-        }
-      }, () => guardedFinish(ticket, 0, "")).catch((e) => logE(`fetch\u76D1\u542C\u5931\u8D25\uFF1A${e.message}`));
-      return result;
-    };
-    const origOpen = XMLHttpRequest.prototype.open, origSend = XMLHttpRequest.prototype.send;
-    const xhrMeta = /* @__PURE__ */ new WeakMap();
-    XMLHttpRequest.prototype.open = function(method, url) {
-      xhrMeta.set(this, { url: toUrlString(url) });
-      return origOpen.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.send = function(data) {
-      const m = xhrMeta.get(this);
-      let target = false;
-      try {
-        target = !!endpoint(m?.url || "");
-      } catch {
-      }
-      if (target) {
-        const ctx = snapshotContext(), started = Date.now();
-        const body = bodyForObservation(data);
-        const dispatch = engine.reserve();
-        const ticket = body && typeof body.then === "function" ? Promise.resolve(body).then((x2) => engine.start(m.url, x2, ctx, started, dispatch), () => engine.start(m.url, null, ctx, started, dispatch)) : engine.start(m.url, body, ctx, started, dispatch);
-        this.addEventListener("loadend", () => {
-          let raw = "";
-          try {
-            raw = this.responseType === "json" ? JSON.stringify(this.response) : this.responseType === "" || this.responseType === "text" ? this.responseText : "";
-          } catch {
-          }
-          guardedFinish(ticket, this.status, raw);
-        }, { once: true });
-      }
-      return origSend.apply(this, arguments);
-    };
-    let transitionExpected = null;
-    function beginTransition(level, value) {
-      engine.transition = true;
-      transitionExpected = { level, value, since: engine.seq };
-    }
-    document.addEventListener("click", (event) => {
-      if (panel?.contains(event.target)) return;
-      const radio = event.composedPath().find((el) => el?.tagName?.toLowerCase() === "kat-radiobutton");
-      const name = radio?.getAttribute("name");
-      if (event.isTrusted && AUTO.running && Object.values(F).includes(name)) {
-        AUTO.stopping = true;
-        logW("\u68C0\u6D4B\u5230\u624B\u52A8\u5207\u6362\u7B5B\u9009\u5668\uFF0C\u7EC8\u6B62\u81EA\u52A8\u904D\u5386\u5E76\u4FDD\u7559\u5F53\u524D\u7ED3\u679C");
-      }
-      if ([F.store, F.category, F.ptype].includes(name)) {
-        beginTransition(Object.keys(F).find((k) => F[k] === name), radio.getAttribute("value"));
-      }
-      if (name === F.keyword) {
-        const ctx = snapshotContext(), value = radio.getAttribute("value");
-        ctx.keyword = { value, label: radio.getAttribute("label") || value, index: 0, total: 0 };
-        ctx.nodeId = value;
-        const list = engine.catalog.get(JSON.stringify(pathOf(ctx).slice(0, 3)));
-        const pkey = JSON.stringify(pathOf(ctx).slice(0, 3));
-        const settled = !transitionExpected || readFilter(F[transitionExpected.level]).value === transitionExpected.value && (engine.directorySequence.get(pkey) || 0) > transitionExpected.since;
-        if (list?.has(value) && settled) {
-          engine.transition = false;
-          transitionExpected = null;
-          if (!presetRoundClick) engine.begin(ctx, true);
         }
       }
-    }, true);
-    setInterval(() => {
-      const ctx = snapshotContext(), list = engine.catalog.get(JSON.stringify(pathOf(ctx).slice(0, 3)));
-      const parent = JSON.stringify(pathOf(ctx).slice(0, 3));
-      if (transitionExpected && readFilter(F[transitionExpected.level]).value === transitionExpected.value && (engine.directorySequence.get(parent) || 0) > transitionExpected.since && list?.has(ctx.keyword.value)) {
-        engine.transition = false;
-        transitionExpected = null;
+      element("progress").textContent = `\u5173\u952E\u8BCD ${c?.keyword.index || 0}/${c?.keyword.total || 0}\u3000\u5546\u54C1\u7C7B\u578B ${c?.product_type.index || 0}/${c?.product_type.total || 0}\u3000\u7C7B\u522B ${c?.category.index || 0}/${c?.category.total || 0}\u3000\u5546\u5E97 ${c?.store.index || 0}/${c?.store.total || 0}\u3000\uFF5C\u672C\u6B21\u5DF2\u4FDD\u5B58 ${engine.task?.count || 0}${engine.task?.config.totalLimit ? " / " + engine.task.config.totalLimit : ""}`;
+      const list = element("list"), scroll = list.scrollTop;
+      list.replaceChildren(...visible.map(row));
+      if (!visible.length) {
+        const empty = document.createElement("div");
+        empty.className = "small";
+        empty.textContent = "\u6682\u65E0\u5F85\u4E0B\u8F7D\u6570\u636E\uFF0C\u70B9\u51FB\u5F00\u59CB\u6293\u53D6\u540E\u663E\u793A\u7ED3\u679C\u3002";
+        list.append(empty);
       }
-    }, 200);
-    logI("document-start\uFF1Afetch/XHR \u76D1\u542C\u5DF2\u5B89\u88C5\uFF0C\u7B49\u5F85\u624B\u52A8\u5F00\u59CB\u904D\u5386");
-    function boot() {
-      if (document.body) {
-        createPanel();
-        setInterval(updateProgress, 2e3);
-      } else setTimeout(boot, 300);
+      list.scrollTop = scroll;
+    };
+    let dragging = null;
+    const panel = element("panel");
+    element("header").onpointerdown = (e) => {
+      if (e.button !== 0 || e.target.closest("button")) return;
+      const rect = panel.getBoundingClientRect();
+      dragging = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      element("header").setPointerCapture(e.pointerId);
+    };
+    element("header").onpointermove = (e) => {
+      if (dragging) {
+        panel.style.left = `${Math.max(0, e.clientX - dragging.x)}px`;
+        panel.style.top = `${Math.max(0, e.clientY - dragging.y)}px`;
+      }
+    };
+    element("header").onpointerup = () => {
+      dragging = null;
+    };
+    installLayout(root);
+    renderLog();
+    render();
+    try {
+      await ready;
+      initialized = true;
+      log("I", `v${VERSION} \u672C\u5730\u7248\u5C31\u7EEA\uFF1B\u56DB\u8BF7\u6C42\u4E3B\u52A8\u91C7\u96C6\uFF0C\u8282\u70B9\u95F4\u9ED8\u8BA415\u201345\u79D2\uFF0C\u6700\u4F4E15\u79D2`);
+    } catch (e) {
+      log("E", `\u521D\u59CB\u5316\u5931\u8D25\uFF0C\u8BF7\u4FDD\u7559\u65E7\u9875\u9762\u5E76\u68C0\u67E5\u5B58\u50A8\uFF1A${String(e)}`);
     }
-    boot();
-    console.log(`[Tampermonkey] Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION} loaded`);
-  })();
+    render();
+    setInterval(render, 1500);
+  }
+  void ready.catch((e) => log("E", `\u6062\u590D\u5931\u8D25\uFF1A${String(e)}`));
+  void boot();
 })();
