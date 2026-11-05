@@ -6,9 +6,12 @@
     "dev": "node scripts/serve-local.mjs",
     "build": "node scripts/build-manifest.mjs && node scripts/build-desensitizer.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-xlsx-workbook-merger.mjs && node --test scripts/test-desensitizer.mjs scripts/test-build-manifest.mjs",
+    "test": "node scripts/test-xlsx-workbook-merger.mjs && node --test scripts/test-desensitizer.mjs scripts/test-build-manifest.mjs scripts/test-desensitizer-batch.mjs scripts/test-desensitizer-relations.mjs",
     "test:sample": "node scripts/test-desensitizer-sample.mjs",
-    "test:browser": "node scripts/test-desensitizer-browser.mjs"
+    "test:browser": "node scripts/test-desensitizer-browser.mjs",
+    "test:current-samples": "node scripts/test-desensitizer-current-samples.mjs",
+    "test:batch-sample": "node scripts/test-desensitizer-batch-sample.mjs",
+    "test:matrix-browser": "node scripts/test-desensitizer-matrix-browser.mjs"
   },
   "engines": {
     "node": ">=22"

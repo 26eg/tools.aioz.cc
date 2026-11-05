@@ -3,8 +3,8 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { engine as e } from './load-desensitizer-test.mjs';
 
-const input = path.resolve(process.argv[2] ?? '../自动脱敏工作簿/可测试功能的数据源.xlsx');
-const output = path.resolve(process.argv[3] ?? `../自动脱敏工作簿/本地测试结果/${e.timestamp()}`);
+const input = path.resolve(process.argv[2] ?? '../../本地项目/工作簿脱敏与恢复/测试数据/原始样本/日利润报表-2026-09.xlsx');
+const output = path.resolve(process.argv[3] ?? `../../本地项目/工作簿脱敏与恢复/测试结果/单文件回归-${e.timestamp()}`);
 const bytes = new Uint8Array(await readFile(input));
 const sourceHash = await e.sha256(bytes);
 const source = e.readBook(bytes);
@@ -51,6 +51,7 @@ for (const [name, content] of [
 assert.equal(await e.sha256(new Uint8Array(await readFile(input))), sourceHash, 'Source fixture was changed');
 const summary = {
   source: input, sourceSha256: sourceHash, output, sourceRows: analysis.rows, columns: analysis.rules.length,
+  columnModes: { [source.sheets[0].name]: Object.fromEntries(analysis.rules.map(rule => [rule.letter, rule.mode])) },
   cellsChecked: checkedCells, maskMs, stats: result.stats, restoredCells: restored.restored, reportReplacements: report.restored,
   types: Object.fromEntries([...new Set(analysis.rules.map((r) => r.type))].map((type) => [type, analysis.rules.filter((r) => r.type === type).length])),
   warnings: analysis.warnings,

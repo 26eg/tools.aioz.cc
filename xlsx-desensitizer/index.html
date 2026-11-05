@@ -6,8 +6,8 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; worker-src 'self'; connect-src 'none'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
   <meta name="referrer" content="no-referrer">
   <title>工作簿脱敏与恢复 · AIOZ 效能工坊</title>
-  <link rel="stylesheet" href="./style.css?v=1">
-  <script type="module" src="./dist/app.js?v=1"></script>
+  <link rel="stylesheet" href="./style.css?v=7">
+  <script type="module" src="./dist/app.js?v=7"></script>
 </head>
 <body>
 <main class="container">
@@ -21,25 +21,44 @@
   </nav>
   <div class="workspace">
     <section class="panel main-panel" aria-labelledby="modeTitle">
-      <div class="section-head"><div><h2 id="modeTitle">选择原始工作簿</h2><p id="modeDescription">默认处理第 1 个工作表，扫描全列后自动识别数据类型。</p></div><span class="step" id="stepLabel">第 1 步 / 选择文件</span></div>
+      <div class="section-head"><div><h2 id="modeTitle">选择原始工作簿</h2><p id="modeDescription">多文件共享语义字段映射；可导入旧字典续批。</p></div><span class="step" id="stepLabel">第 1 步 / 选择文件</span></div>
+    <details class="guide rule-guide" id="ruleGuide">
+      <summary id="guideTitle">使用规则与文件兼容范围（点击展开）</summary><div class="rule-content">
+      <div id="maskGuide">
+        <ol><li>选择工作簿，自动扫描所有列。</li><li>核对类型与策略，调整需保留的文本列。</li><li>生成 ZIP，内含各脱敏工作簿、统一完整字典和处理清单。</li></ol>
+        <dl><dt>人名统一编码</dt><dd>销售员、销售员*、IPD、GTM 共用字典；编码为「人1、人2…」，同一人名跨列只对应一个编码。</dd><dt>店铺保留后缀</dt><dd>批次编码为 S1+原末尾3字，完整原值去重，并保留末尾 3 个字符。</dd><dt>其他列友好短编码</dt><dd>批次编码为 X1、X2…；相同语义字段内相同原值一致，跨字段不混用，并避开本批原始文本。</dd><dt>日期与小数</dt><dd>仅转换明确日期；日期列不脱敏。数值按底层值四舍五入至 2 位，包括负数与比例值。</dd><dt>真空白与选表输出</dt><dd>逐文件选择工作表，默认第一张；未选表不进入输出。空字符串、纯空格和不可见空白字符清为真空白。</dd></dl>
+      </div>
+      <div id="restoreGuide" class="hidden"><ol><li>选择需恢复的工作簿。</li><li>选择对应字典系列的最新完整字典。</li><li>校验映射并导出已解密 XLSX。</li></ol><p>恢复名称和工作表名。已清洗的日期、两位小数和真空白保持不变。</p><p>支持数据行排序与筛选后的子集；保留首行表头与完整编码。混用其他批次或编码残缺会停止处理。</p></div>
+      <div id="reportGuide" class="hidden"><ol><li>选择 UTF-8 编码的 HTML 报告。</li><li>选择对应的字典工作簿。</li><li>下载恢复原始名称的 HTML。</li></ol><p>处理正文、常规属性、内嵌 JSON 和 JavaScript 字符串；保留报告结构。工具不会打开或执行报告。</p><p>图片里的文字、外部文件、压缩/编码数据、跨标签拆开的编码，以及 CSS 或 URL 中的编码需要先转换为普通文本。</p></div>
+      <div class="notice"><strong>字典等同于恢复钥匙</strong><p>字典含原始明文。对外共享时只发送脱敏工作簿，不要发送整个 ZIP。店铺后 3 字符和同值关系仍会保留。</p></div>
+      <details><summary>文件兼容范围</summary><p>逐文件选择工作表，输出仅保留所选表；表名替换为“工作表1、工作表2…”并可恢复。保留列宽、行高、冻结窗格、筛选和常规单元格格式。</p><p>表头统一在第 1 行。每批 ≤ 30 文件、输入合计 ≤ 150 MiB、字典 ≤ 100,000 映射、结果合计 ≤ 150 MiB；每文件 ≤ 50 MiB、解压后 ≤ 250 MB、已存储单元格 ≤ 2,000,000。复杂对象、公式、合并、超链接、验证、条件格式和保护表暂不支持，先导出为值表。不支持的部件会明确拒绝；可安全处理的辅助部件按既有规则清理。</p><p>共享字符串缓存、作者属性、人员信息、页眉页脚和自定义名称会清理。富文本恢复为普通文本。文件名与表头保持原样，分享前自行检查其中是否有敏感信息。</p><p>自动识别不会理解所有业务含义。仅由数字组成的账号应在源文件中设为文本；前导零标识和长数字文本默认按文本处理。</p></details>
+    </div></details>
       <div class="inputs">
         <label class="dropzone" id="sourceDrop">
-          <input id="sourceFile" type="file" accept=".xlsx" aria-label="选择原始工作簿">
+          <input id="sourceFile" type="file" multiple accept=".xlsx" aria-label="选择原始工作簿">
           <span class="file-icon" aria-hidden="true">↥</span><strong id="sourcePrompt">点击选择或拖入 XLSX 工作簿</strong><span id="sourceHint">单个文件 ≤ 50 MB · 表头位于第 1 行</span>
         </label>
-        <label class="dropzone hidden" id="dictionaryDrop">
+        <label class="dropzone" id="dictionaryDrop">
           <input id="dictionaryFile" type="file" accept=".xlsx" aria-label="选择对应的字典工作簿">
-          <span class="file-icon" aria-hidden="true">⌘</span><strong>选择对应的字典 XLSX</strong><span>使用同一次脱敏导出的字典</span>
+          <span class="file-icon" aria-hidden="true">⌘</span><strong>选择字典 XLSX（脱敏时可选）</strong><span>不选则新建批次；导入可续用已有编码</span>
         </label>
       </div>
       <div class="file-summary hidden" id="fileSummary"></div>
+      <section id="sheetChoices" class="hidden" aria-label="逐文件选择工作表"></section>
       <div class="actions"><button class="primary" id="run" type="button" disabled>分析工作簿</button><button class="secondary" id="clear" type="button">清空文件</button><button class="secondary hidden" id="cancel" type="button">取消处理</button></div>
       <div id="status" role="status" aria-live="polite" class="status hidden"></div>
       <section id="analysis" class="hidden" aria-labelledby="analysisTitle">
-        <div class="analysis-head"><div><h3 id="analysisTitle">列识别与脱敏策略</h3><p id="analysisSummary"></p></div><label class="filter"><input type="checkbox" id="focusColumns" checked> 仅看文本、日期与待检查列</label></div>
-        <p class="scope-note">支持逐列调整。数值单元格统一保留至 2 位小数；人名、店铺和日期列使用固定规则。</p>
-        <div class="table-wrap" tabindex="0" aria-label="列识别结果，可横向滚动">
-          <table><thead><tr><th>工作表 / 列</th><th>表头</th><th>识别类型</th><th>处理策略</th><th>本地示例</th><th>检查结果</th></tr></thead><tbody id="columns"></tbody></table>
+        <div class="analysis-head"><div><h3 id="analysisTitle">映射分组工作台</h3><p id="analysisSummary"></p></div><label class="filter" id="legacyFocusLabel"><input type="checkbox" id="focusColumns" checked> 仅看文本、日期与待检查列</label></div>
+        <p class="scope-note">每行一个映射组，每列一个工作表。单元格可容纳同表多个字段。勾选字段后批量移组，或“添加字段”跨表多选；原始表头保持不变。</p>
+        <div class="view-switch"><button id="viewMatrix" type="button" class="secondary" aria-pressed="true">分组矩阵</button><button id="viewSheets" type="button" class="secondary" aria-pressed="false">按表查看（辅助）</button></div>
+        <div class="board-toolbar"><label>查找字段 <input id="fieldSearch" type="search" placeholder="表头关键词，可用 | 同时查找" autocomplete="off"></label><span>横向滚动查看其他工作表 · 同名字段默认共用映射</span></div>
+        <details id="mappingGroups" class="mapping-groups" open><summary>共用映射分组（包括同一工作表内的不同字段）</summary><div id="groupList"></div></details>
+        <div class="group-controls" id="legacyGroupControls"><button type="button" id="showAllGroups" class="secondary hidden">返回全部字段</button><label><input id="showConnections" type="checkbox"> 显示辅助连线</label></div>
+        <p id="relationStatus" class="relation-status" role="status" aria-live="polite"></p>
+        <div id="legacyDomains"></div>
+        <div id="matrixRoot"></div>
+        <div id="legacyBoard" class="field-board-scroll" tabindex="0" aria-label="工作表字段关联，可横向与纵向滚动">
+          <div id="columns" class="field-board"></div>
         </div>
         <ul id="warnings" class="warnings"></ul>
       </section>
@@ -47,19 +66,20 @@
         <h3 id="resultTitle">处理完成</h3><p id="resultSummary"></p><a id="download" class="download">下载文件</a><p id="resultNote" class="result-note"></p>
       </section>
     </section>
-    <aside class="panel guide">
-      <h2 id="guideTitle">脱敏规则</h2>
-      <div id="maskGuide">
-        <ol><li>选择工作簿，自动扫描所有列。</li><li>核对类型与策略，调整需保留的文本列。</li><li>生成 ZIP，内含脱敏工作簿与字典。</li></ol>
-        <dl><dt>人名统一编码</dt><dd>销售员、销售员*、IPD、GTM 共用字典；编码为「人1、人2…」，同一人名跨列只对应一个编码。</dd><dt>店铺保留后缀</dt><dd>编码格式为「列号+序号+原末尾3字」（如 B1-US、B2旗舰店），保留末尾 3 个字符。</dd><dt>其他列友好短编码</dt><dd>编码格式为「列号+序号」（如 A1、A2、C1），不同列之间不重复，且自动避开原表已有字符。</dd><dt>日期与小数</dt><dd>仅转换明确日期；日期列不脱敏。数值按底层值四舍五入至 2 位，包括负数与比例值。</dd><dt>真空白与单表输出</dt><dd>默认仅处理并输出第 1 个工作表。空字符串、纯空格和不可见空白字符清为真空白。</dd></dl>
-      </div>
-      <div id="restoreGuide" class="hidden"><ol><li>选择需恢复的工作簿。</li><li>选择同一次导出的字典。</li><li>校验映射并导出已解密 XLSX。</li></ol><p>恢复名称和工作表名。已清洗的日期、两位小数和真空白保持不变。</p><p>支持数据行排序与筛选后的子集；保留首行表头与完整编码。混用其他批次或编码残缺会停止处理。</p></div>
-      <div id="reportGuide" class="hidden"><ol><li>选择 UTF-8 编码的 HTML 报告。</li><li>选择对应的字典工作簿。</li><li>下载恢复原始名称的 HTML。</li></ol><p>处理正文、常规属性、内嵌 JSON 和 JavaScript 字符串；保留报告结构。工具不会打开或执行报告。</p><p>图片里的文字、外部文件、压缩/编码数据、跨标签拆开的编码，以及 CSS 或 URL 中的编码需要先转换为普通文本。</p></div>
-      <div class="notice"><strong>字典等同于恢复钥匙</strong><p>字典含原始明文。对外共享时只发送脱敏工作簿，不要发送整个 ZIP。店铺后 3 字符和同值关系仍会保留。</p></div>
-      <details><summary>文件兼容范围</summary><p>默认处理第 1 个工作表，输出的工作簿仅保留该工作表；表名替换为“工作表1”并可恢复。保留列宽、行高、冻结窗格、筛选和常规单元格格式。</p><p>表头统一在第 1 行。每文件 ≤ 50 MB、解压后 ≤ 250 MB、已存储单元格 ≤ 2,000,000。复杂对象、公式、合并、超链接、验证、条件格式和保护表暂不支持，先导出为值表。绘图、批注等辅助部件将自动安全清理。</p><p>共享字符串缓存、作者属性、人员信息、页眉页脚和自定义名称会清理。富文本恢复为普通文本。文件名与表头保持原样，分享前自行检查其中是否有敏感信息。</p><p>自动识别不会理解所有业务含义。仅由数字组成的账号应在源文件中设为文本；前导零标识和长数字文本默认按文本处理。</p></details>
-    </aside>
+
   </div>
   <footer>© 2026 AIOZ 效能工坊 · <a href="./dist/THIRD-PARTY-LICENSES.txt">开源组件许可</a></footer>
+<dialog id="fieldPicker" class="field-picker" aria-labelledby="pickerTitle">
+  <div class="picker-head"><h3 id="pickerTitle">选择对应字段</h3><button id="pickerClose" class="secondary" type="button">关闭</button></div>
+  <p id="pickerSource" class="picker-source"></p>
+  <div class="picker-filters"><label>查找表头或示例 <input id="pickerSearch" type="search" autocomplete="off" placeholder="例如：父、ASIN、某个示例值"></label><label>目标工作表 <select id="pickerSheet"></select></label></div>
+  <p id="pickerCount"></p><div id="pickerCandidates" class="picker-candidates"></div>
+</dialog>
+<dialog id="groupPicker" class="field-picker" aria-labelledby="bulkTitle"><div class="picker-head"><h3 id="bulkTitle">批量选择组成员</h3><button id="bulkClose" type="button" class="secondary">关闭</button></div>
+<label class="bulk-name">组名（不修改表头）<input id="bulkName" maxlength="150" placeholder="例如：父 ASIN"></label>
+<div class="picker-filters"><label>搜索字段 / 示例<input id="bulkSearch" type="search" placeholder="例如：父、ASIN"></label><label>筛选工作表<select id="bulkSheet"></select></label></div>
+<div id="bulkFields" class="bulk-fields"></div><p id="bulkPreview" class="bulk-preview" role="status"></p><button id="bulkApply" type="button" class="primary">确认加入组</button></dialog>
+<div class="action-dock" aria-label="处理与下载"><span id="dockStatus" role="status">选择文件后，在矩阵中核对字段分组。</span><button id="dockCancel" type="button" class="secondary hidden">取消</button><button id="dockRun" type="button" class="primary" disabled>分析工作簿</button><a id="dockDownload" class="download hidden">下载 ZIP</a></div>
 </main>
 </body>
 </html>

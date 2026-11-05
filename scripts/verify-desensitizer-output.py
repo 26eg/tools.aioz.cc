@@ -22,6 +22,7 @@ def main() -> None:
     masked = load_workbook(directory / summary["files"]["workbook"], read_only=False, data_only=False)
     recovered = load_workbook(directory / summary["files"]["restored"], read_only=False, data_only=False)
     dictionary = load_workbook(directory / summary["files"]["dictionary"], read_only=True, data_only=False)
+    column_modes = summary.get('columnModes', {})
     mapping = {row[2]: row[1] for row in dictionary["映射字典"].iter_rows(min_row=2, values_only=True)}
     assert len(mapping) == summary["stats"]["unique"]
     checked = numbers = dates = blanks = names = 0
@@ -42,7 +43,7 @@ def main() -> None:
                     expected = float(Decimal(str(cell.value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
                     assert anonymized.value == expected and restored.value == expected, cell.coordinate
                     numbers += 1
-                elif isinstance(cell.value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cell.value):
+                elif isinstance(cell.value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", cell.value) and int(cell.value[:4]) >= max(1900, source.epoch.year) and (not column_modes or column_modes.get(original_sheet.title, {}).get(cell.column_letter) == "date"):
                     expected = datetime.strptime(cell.value, "%Y-%m-%d")
                     assert anonymized.value == expected and restored.value == expected, cell.coordinate
                     assert anonymized.is_date and restored.is_date

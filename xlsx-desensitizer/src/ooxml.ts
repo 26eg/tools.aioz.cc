@@ -119,8 +119,9 @@ export interface Book { parts: Parts; workbook: Document; styles: Document; shee
 const standardPart = /^(?:\[Content_Types\]\.xml|_rels\/\.rels|docProps\/[A-Za-z0-9_-]+\.xml|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/styles\.xml|xl\/sharedStrings\.xml|xl\/theme\/theme\d+\.xml|xl\/worksheets\/sheet\d+\.xml|xl\/worksheets\/_rels\/sheet\d+\.xml\.rels|xl\/persons\/person\.xml|xl\/drawings\/(?:_rels\/)?[A-Za-z0-9_.-]+|xl\/media\/[A-Za-z0-9_.-]+|xl\/printerSettings\/[A-Za-z0-9_.-]+|xl\/calcChain\.xml|xl\/comments\d+\.xml|xl\/comments\/_rels\/[A-Za-z0-9_.-]+|xl\/threadedComments\/[A-Za-z0-9_.-]+|xl\/ctrlProps\/[A-Za-z0-9_.-]+|xl\/tables\/[A-Za-z0-9_.-]+)$/;
 const emptyStyles = `<?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="${MAIN}"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
 
-export function readBook(bytes: Uint8Array, firstSheetOnly = false): Book {
+export function readBook(bytes: Uint8Array, firstSheetOnly: boolean | number[] = false): Book {
   const parts = openZip(bytes);
+  check(!Object.keys(parts).some((path) => /^xl\/externalLinks\//.test(path)), '工作簿包含外部工作簿链接，当前不支持直接处理。请将公式转换为值并移除外部链接后，另存为新的 XLSX；不要直接删除 ZIP 内的外链部件。');
   for (const path of Object.keys(parts)) check(standardPart.test(path), `暂不支持部件 ${path}。请先导出为仅含数据与单元格格式的 XLSX。`);
   for (const path of ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels']) check(parts[path], `工作簿缺少 ${path}。`);
   const workbook = parseXml(decode(parts['xl/workbook.xml']!));
@@ -140,7 +141,22 @@ export function readBook(bytes: Uint8Array, firstSheetOnly = false): Book {
   const sheets: Sheet[] = [];
   let total = 0;
   const sheetNodes = elements(workbook, 'sheet');
-  const targetNodes = firstSheetOnly ? sheetNodes.slice(0, 1) : sheetNodes;
+  // Validate workbook-level references even when only selected sheets are parsed.
+  const allPaths = new Set<string>(), allNames = new Set<string>();
+  for (const node of sheetNodes) {
+    const name = node.getAttribute('name') ?? '';
+    check(name.length > 0 && name.length <= 31 && !/[\\/*?:\[\]]/.test(name) && !allNames.has(name.toLowerCase()), '工作表名称无效或重复。');
+    allNames.add(name.toLowerCase());
+    const rel = rels.get(node.getAttributeNS(DOC_REL, 'id'));
+    check(rel && !rel.getAttribute('TargetMode'), '工作表关系无效。');
+    const target = rel.getAttribute('Target') ?? '';
+    const path = target.startsWith('/') ? target.slice(1) : `xl/${target.replace(/^\.\//, '')}`;
+    check(/^xl\/worksheets\/sheet\d+\.xml$/.test(path) && parts[path] && !allPaths.has(path), '工作表路径或名称重复、缺失或无效。');
+    allPaths.add(path);
+  }
+  check(Object.keys(parts).filter((path) => /^xl\/worksheets\/sheet\d+\.xml$/.test(path)).every((path) => allPaths.has(path)), '工作簿包含未引用的工作表，无法保证脱敏完整。');
+  if (Array.isArray(firstSheetOnly)) check(firstSheetOnly.length > 0 && new Set(firstSheetOnly).size === firstSheetOnly.length && firstSheetOnly.every((i) => Number.isInteger(i) && i >= 0 && i < sheetNodes.length), '工作表选择无效。');
+  const targetNodes = Array.isArray(firstSheetOnly) ? sheetNodes.filter((_, i) => firstSheetOnly.includes(i)) : firstSheetOnly ? sheetNodes.slice(0, 1) : sheetNodes;
   for (const node of targetNodes) {
     const name = node.getAttribute('name') ?? '';
     check(name.length > 0 && name.length <= 31 && !/[\\/*?:\[\]]/.test(name), '工作表名称无效。');
@@ -187,15 +203,16 @@ export function readBook(bytes: Uint8Array, firstSheetOnly = false): Book {
   const date1904 = ['1', 'true'].includes(elements(workbook, 'workbookPr')[0]?.getAttribute('date1904') ?? '');
   return { parts, workbook, styles, sheets, date1904 };
 }
-export function isolateFirstSheet(book: Book): void {
+export function isolateFirstSheet(book: Book): void { isolateSheets(book, book.sheets.slice(0, 1).map((s) => s.name)); }
+export function isolateSheets(book: Book, names: string[]): void {
   const sheetNodes = elements(book.workbook, 'sheet');
-  if (sheetNodes.length <= 1 && book.sheets.length <= 1) return;
+  check(names.length > 0 && names.every((n) => book.sheets.some((s) => s.name === n)), '工作表选择无效。');
   const relsDoc = book.parts['xl/_rels/workbook.xml.rels'] ? parseXml(decode(book.parts['xl/_rels/workbook.xml.rels']!)) : null;
   const contentTypesDoc = book.parts['[Content_Types].xml'] ? parseXml(decode(book.parts['[Content_Types].xml']!)) : null;
   const removedRelIds = new Set<string>();
   const removedSheetPaths = new Set<string>();
-  for (let i = 1; i < sheetNodes.length; i++) {
-    const node = sheetNodes[i]!;
+  for (const node of sheetNodes) {
+    if (names.includes(node.getAttribute('name') ?? '')) continue;
     const rId = node.getAttributeNS(DOC_REL, 'id') || node.getAttribute('r:id');
     if (rId) removedRelIds.add(rId);
     node.parentNode!.removeChild(node);
@@ -215,18 +232,21 @@ export function isolateFirstSheet(book: Book): void {
   if (contentTypesDoc) {
     for (const item of elements(contentTypesDoc, 'Override', 'http://schemas.openxmlformats.org/package/2006/content-types')) {
       const partName = (item.getAttribute('PartName') ?? '').replace(/^\//, '');
-      if (removedSheetPaths.has(partName) || /^xl\/worksheets\/sheet[2-9]\d*\.xml$/.test(partName)) {
+      if (removedSheetPaths.has(partName)) {
         item.parentNode!.removeChild(item);
       }
     }
     book.parts['[Content_Types].xml'] = encode(xml(contentTypesDoc));
   }
   for (const path of Object.keys(book.parts)) {
-    if (removedSheetPaths.has(path) || /^xl\/worksheets\/sheet[2-9]\d*\.xml$/.test(path) || /^xl\/worksheets\/_rels\/sheet[2-9]\d*\.xml\.rels$/.test(path)) {
+    if (removedSheetPaths.has(path) || [...removedSheetPaths].some((p) => path === p.replace('/sheet', '/_rels/sheet') + '.rels')) {
       delete book.parts[path];
     }
   }
-  book.sheets = book.sheets.slice(0, 1);
+  book.sheets = book.sheets.filter((s) => names.includes(s.name));
+  for (const view of elements(book.workbook, 'workbookView')) { view.setAttribute('activeTab', '0'); view.setAttribute('firstSheet', '0'); }
+  // An explicitly selected hidden sheet must be accessible in the exported workbook.
+  book.sheets[0]!.node.removeAttribute('state');
 }
 function textRuns(element: Element): string {
   return excelDecode(elements(element, 't').filter((t) => t.parentNode?.nodeName !== 'rPh').map((t) => t.textContent ?? '').join(''));

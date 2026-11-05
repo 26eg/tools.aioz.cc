@@ -1,6 +1,7 @@
-import { build } from 'esbuild';
+import { build, transform } from 'esbuild';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 
+await transform(await readFile('xlsx-desensitizer/style.css', 'utf8'), { loader: 'css' });
 await mkdir('xlsx-desensitizer/dist', { recursive: true });
 await build({
   entryPoints: ['xlsx-desensitizer/src/app.ts', 'xlsx-desensitizer/src/worker.ts'],

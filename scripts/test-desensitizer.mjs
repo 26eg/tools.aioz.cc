@@ -300,3 +300,26 @@ test('columns where all numbers are positive or integers do not have extra 2 dec
   assert.equal(value(result.workbook, 'C2'), 1.01);
   assert.equal(value(result.workbook, 'C3'), -1.01);
 });
+const sharedPrefixStores = {
+  version: 1, batch: '1234567890ABCDEF', sourceName: '旧报告.xlsx', created: now.toISOString(),
+  mappings: [{domain:'A:店铺',original:'甲店-US',masked:'S1-US'},{domain:'店铺',original:'乙店-UK',masked:'S1-UK'},{domain:'店铺',original:'丙店<&>',masked:'S2<&>'}],
+  sheets: [{original:'原表',masked:'工作表1'}],
+};
+test('report restoration accepts every full store code sharing a numeric prefix',async()=>{
+  for(const dictionary of [sharedPrefixStores,await e.readDictionary(await e.writeDictionary(sharedPrefixStores))]) {
+    const result=e.restoreReportText('<p>S1-US / S1-UK</p><script>const shop="S1-UK";</script><script type="application/json">{"shop":"S1-US","site":"US"}</script>',dictionary);
+    assert.equal(result.restored,4);assert.ok(result.text.includes('甲店-US'));assert.ok(result.text.includes('乙店-UK'));assert.ok(result.text.includes('"site":"US"'));
+  }
+});
+test('shared-prefix validation still rejects truncated, changed, expanded and split store codes',()=>{
+  for(const source of ['<p>S1</p>','<p>S1-DE</p>','<p>S1_US</p>','<p>S1-USX</p>','<p>S1-US / S1-DE</p>','<span>S1</span><span>-US</span>']) assert.throws(()=>e.restoreReportText(source,sharedPrefixStores),/脱敏编码或店铺末尾字符/);
+});
+test('store suffix validation remains context safe for HTML entities and old dictionary XLSX restoration',async()=>{
+ const report=e.restoreReportText('<p>S2&lt;&amp;&gt;</p>',sharedPrefixStores);assert.equal(report.restored,1);assert.ok(report.text.includes('丙店&lt;&amp;&gt;'));
+ const bytes=fixture([['店铺','站点'],['S1-US','US'],['S1-UK','UK']]);const restored=await e.restoreWorkbook(bytes,await e.writeDictionary(sharedPrefixStores),'旧结果.xlsx');assert.equal(value(restored.bytes,'A2'),'甲店-US');assert.equal(value(restored.bytes,'A3'),'乙店-UK');assert.equal(value(restored.bytes,'B2'),'US');
+});
+test('a real multi-file v2 dictionary restores shared-prefix shops without changing existing tokens',async()=>{
+ const files=['甲店-US','乙店-UK'].map((shop,i)=>new File([fixture([['店铺'],[shop]])],`文件${i}.xlsx`));
+ const plan={files:files.map((_,i)=>({id:String(i+1),sheets:[0],domains:{'0:1':'店铺'},overrides:{}})),legacyDomains:{}};
+ const batch=await e.maskBatch(files,plan),zip=e.openZip(batch.bytes),dictionary=await e.readDictionary(zip['批次脱敏字典.xlsx']);assert.equal(dictionary.version,2);assert.deepEqual(dictionary.mappings.map(m=>m.masked),['S1-US','S1-UK']);const restored=await e.restoreReport('<p>S1-US</p><p>S1-UK</p>',zip['批次脱敏字典.xlsx'],'报告.html');assert.equal(restored.restored,2);assert.match(restored.text,/甲店-US/);assert.match(restored.text,/乙店-UK/);
+});
