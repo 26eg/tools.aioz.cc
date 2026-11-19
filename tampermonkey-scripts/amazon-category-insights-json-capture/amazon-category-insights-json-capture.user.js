@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon 类目洞察数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      7.0.3
+// @version      7.0.5
 // @description  主动请求类目洞察四类数据；四级目录遍历、15–45秒节点间隔、分批ZIP、断点续采与详细日志。
 // @homepageURL  https://tools.aioz.cc/tampermonkey-scripts/
 // @updateURL    https://tools.aioz.cc/tampermonkey-scripts/amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js
@@ -16,13 +16,15 @@
 "use strict";
 (() => {
 
-  var VERSION = "7.0.3";
+  var VERSION = "7.0.5";
   var FILTER_API = "/next/v2/getFilters";
   var KINDS = ["getPerformanceDashboard", "getFeaturesDashboard", "relatedAsin_top_grossing", "relatedAsin_new_successful"];
   var LABELS = { getPerformanceDashboard: "\u6240\u6709ASIN", getFeaturesDashboard: "\u4EA7\u54C1\u7279\u5F81\u8D8B\u52BF", relatedAsin_top_grossing: "\u6700\u7545\u9500ASIN", relatedAsin_new_successful: "\u65B0\u53D1\u5E03ASIN" };
   var LEVELS = ["keyword", "ptype", "category", "store"];
   var FILTER_NAMES = { store: "sgar-tmp-filter", category: "sgar-cat-filter", ptype: "sgar-pdt-filter", keyword: "sgar-bn-filter" };
   var DEFAULTS = { target: 50, totalLimit: 0, delayMin: 15, delayMax: 45, levels: { keyword: true, ptype: false, category: false, store: false } };
+  var nodeComplete = (b) => b.outcomes?.getPerformanceDashboard?.status === "data" && KINDS.every((k) => ["data", "empty", "no-content"].includes(b.outcomes?.[k]?.status || ""));
+  var failedKinds = (b) => KINDS.filter((k) => k === "getPerformanceDashboard" ? b.outcomes?.[k]?.status !== "data" : !["data", "empty", "no-content"].includes(b.outcomes?.[k]?.status || ""));
   var iso = () => (/* @__PURE__ */ new Date()).toISOString();
   var stamp = () => iso().replace(/[:.]/g, "-");
   var pathOf = (c) => [c.store.value, c.category.value, c.product_type.value, c.keyword.value];
@@ -333,6 +335,7 @@
     const numeric = Number(value), result = Number.isFinite(numeric) ? numeric * 1e3 : Date.parse(value) - now;
     return Number.isFinite(result) ? Math.max(0, result) : 0;
   }
+  var requestTimeout = (base, wave, timedOut) => timedOut ? base * Math.min(3, wave + 1) : base;
   var Collector = class {
     constructor(store, cache2, fetcher, log2, changed = () => {
     }, runtime = {}) {
@@ -341,7 +344,7 @@
       this.fetcher = fetcher;
       this.log = log2;
       this.changed = changed;
-      this.rt = { now: Date.now, random: Math.random, wait, timeout: 6e4, retries: 3, ...runtime };
+      this.rt = { now: Date.now, random: Math.random, wait, timeout: 6e4, retries: 3, deferredDelay: 3e4, ...runtime };
     }
     store;
     cache;
@@ -355,8 +358,10 @@
     fatal = null;
     controller = new AbortController();
     requests = 0;
+    requestSession = Math.random().toString(36).slice(2);
     queue = Promise.resolve();
     exporter = async () => false;
+    failureReporter = async () => true;
     rt;
     serial(work) {
       const next = this.queue.then(work);
@@ -381,6 +386,7 @@
     }
     async restore() {
       this.task = await this.store.get("tasks", "active") || null;
+      if (this.task) this.task.failures ||= {};
       const cleanup = [{ table: "quarantine", clear: true }];
       for (const b of await this.store.all("batches")) {
         if (!b.path) b.path = pathOf(b.ctx);
@@ -409,6 +415,10 @@
           o.status = "interrupted";
           o.reason = "\u9875\u9762\u5237\u65B0\u524D\u8BF7\u6C42\u672A\u5B8C\u6210";
         }
+        if (state?.counted && !nodeComplete(b)) {
+          state.counted = false;
+          this.task.count = Math.max(0, this.task.count - 1);
+        }
         this.batches.set(b.key, b);
         if (changed) cleanup.push({ table: "batches", value: b });
       }
@@ -417,6 +427,7 @@
         cleanup.push({ table: "tasks", value: structuredClone(this.task) });
       }
       await this.write(cleanup);
+      for (const b of [...this.batches.values()]) if (b.taskId === this.task?.id && this.task?.nodes[pathKey(b.ctx)]?.processed && !nodeComplete(b) && (!b.deferred || b.deferred.attempted)) await this.finalizeNode(b);
       if (this.task?.status === "running") {
         this.task.status = "stopped";
         this.task.reason = "\u9875\u9762\u5DF2\u5237\u65B0\uFF0C\u53EF\u7EE7\u7EED\u672A\u5B8C\u6210\u4EFB\u52A1";
@@ -440,26 +451,40 @@
       if (this.task) ops.push({ table: "tasks", value: structuredClone(this.task) });
       await this.write(ops);
     }
-    async http(url, body) {
+    async http(url, body, timeoutMs = this.rt.timeout) {
       if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
-      const requestId = `${this.task?.id || "directory"}-${++this.requests}`;
+      const requestId = `${this.task?.id || "directory"}-${this.requestSession}-${++this.requests}`;
       const abort = new AbortController();
-      const stop = () => abort.abort();
+      const stop = () => abort.abort(new DOMException("\u4EFB\u52A1\u5DF2\u7EC8\u6B62", "AbortError"));
       this.controller.signal.addEventListener("abort", stop, { once: true });
-      const timeout = setTimeout(() => abort.abort(), this.rt.timeout), started = this.rt.now();
-      this.log("I", `\u8BF7\u6C42 ${requestId}\uFF5C${url}\uFF5C${this.task?.current ? contextLabel(this.task.current) : "\u83B7\u53D6\u76EE\u5F55"}`);
+      const started = this.rt.now(), startedAt = iso();
+      let timedOut = false, receivedStatus, receivedRetryAfter = 0, phase = "headers";
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        abort.abort(new DOMException(`\u5B8C\u6574\u54CD\u5E94\u8D85\u8FC7${timeoutMs / 1e3}\u79D2`, "TimeoutError"));
+      }, timeoutMs);
+      const trace = (errorType, reason) => ({ request_id: requestId, started_at: startedAt, ended_at: iso(), elapsed_ms: Math.max(0, this.rt.now() - started), timeout_ms: timeoutMs, http: receivedStatus && phase === "complete" ? receivedStatus : 0, received_http_status: receivedStatus, phase, error_type: errorType, reason });
+      this.log("I", `\u8BF7\u6C42 ${requestId}\uFF5C${url}\uFF5C\u8D85\u65F6${timeoutMs / 1e3}\u79D2\uFF5C${this.task?.current ? contextLabel(this.task.current) : "\u83B7\u53D6\u76EE\u5F55"}`);
       try {
         const r = await this.fetcher(url, { method: "POST", credentials: "include", signal: abort.signal, headers: { accept: "application/json, text/plain, */*", "content-type": "application/json;charset=UTF-8" }, body: JSON.stringify(body) });
+        receivedStatus = r.status;
+        receivedRetryAfter = retryAfter(r.headers.get("Retry-After"), this.rt.now());
+        phase = "body";
         const raw = await r.text();
+        phase = "complete";
         let json;
         try {
           json = raw ? JSON.parse(raw) : void 0;
         } catch {
         }
         this.log("I", `\u54CD\u5E94 ${requestId}\uFF5CHTTP ${r.status}\uFF5C${this.rt.now() - started}ms`);
-        return { status: r.status, raw, json, retry: r.status === 429 || [500, 502, 503, 504].includes(r.status), retryAfter: retryAfter(r.headers.get("Retry-After"), this.rt.now()), requestId };
+        return { status: r.status, raw, json, retry: r.status === 429 || [500, 502, 503, 504].includes(r.status), retryAfter: retryAfter(r.headers.get("Retry-After"), this.rt.now()), requestId, trace: trace(r.ok ? void 0 : "http", r.ok ? void 0 : `HTTP ${r.status}`) };
       } catch (e) {
-        return { status: 0, raw: "", error: String(e), retry: !this.controller.signal.aborted, aborted: this.controller.signal.aborted, retryAfter: 0, requestId };
+        const errorType = this.controller.signal.aborted ? "cancelled" : timedOut ? "timeout" : "network";
+        const reason = timedOut && !this.controller.signal.aborted ? `\u5B8C\u6574\u54CD\u5E94\u8D85\u65F6\uFF08${timeoutMs / 1e3}\u79D2\uFF0C\u9636\u6BB5\uFF1A${phase}${receivedStatus ? `\uFF0C\u5DF2\u6536\u5230HTTP ${receivedStatus}` : ""}\uFF09` : String(e);
+        this.log("W", `${requestId}\uFF5C${errorType}\uFF5C${this.rt.now() - started}ms\uFF5C${reason}`);
+        const status = !this.controller.signal.aborted && [401, 403, 429].includes(receivedStatus || 0) ? receivedStatus : 0;
+        return { status, raw: "", error: reason, retry: !this.controller.signal.aborted, aborted: this.controller.signal.aborted, retryAfter: receivedRetryAfter, requestId, trace: { ...trace(errorType, reason), http: status } };
       } finally {
         clearTimeout(timeout);
         this.controller.signal.removeEventListener("abort", stop);
@@ -510,12 +535,12 @@
       const keyword = find(await this.directory("MP_CAT_PTD_BN", store.value, category.value, product_type.value), start2.keyword.value, "\u5173\u952E\u8BCD");
       return { store, category, product_type, keyword, nodeId: keyword.value };
     }
-    async result(b, kind, r) {
+    async result(b, kind, r, mode) {
       await this.serial(async () => {
         if (this.deleted.has(b.key)) return;
         const task = this.task;
         const previous = b.outcomes?.[kind];
-        const outcome = { status: r.aborted ? "interrupted" : "failed", http: r.status, attempts: previous?.attempts || 1, at: iso() };
+        const outcome = { status: r.aborted ? "interrupted" : "failed", http: r.status, attempts: previous?.attempts || 1, at: iso(), history: previous?.history ? [...previous.history] : [] };
         let reason = r.error || (r.status < 200 || r.status >= 300 ? `HTTP ${r.status}` : "");
         if (!reason) {
           if (r.status === 204) {
@@ -536,11 +561,12 @@
         if (reason) {
           outcome.reason = reason;
         }
+        outcome.history.push({ ...r.trace, attempt: outcome.attempts, mode, result: outcome.status, error_type: reason && !r.trace.error_type ? "schema" : r.trace.error_type, reason: reason || outcome.reason });
         b.outcomes ||= {};
         b.outcomes[kind] = outcome;
         b.updatedAt = this.rt.now();
         const node = task.nodes[pathKey(b.ctx)];
-        if (!node.counted && Object.keys(b.files).length) {
+        if (!node.counted && nodeComplete(b)) {
           node.counted = true;
           task.count++;
         }
@@ -564,6 +590,7 @@
       }
       this.changed();
       let pending = KINDS.filter((k) => !["data", "empty", "no-content"].includes(b.outcomes?.[k]?.status || ""));
+      const timedOutKinds = new Set(KINDS.filter((k) => b.outcomes?.[k]?.history?.some((h) => h.error_type === "timeout")));
       let rateSeen = false;
       for (let wave = 0; pending.length && wave <= this.rt.retries; wave++) {
         if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
@@ -572,13 +599,16 @@
         await this.serial(async () => {
           for (const k of pending) {
             batch.outcomes ||= {};
-            batch.outcomes[k] = { status: "pending", attempts: (batch.outcomes[k]?.attempts || 0) + 1 };
+            const old = batch.outcomes[k];
+            batch.outcomes[k] = { status: "pending", attempts: (old?.attempts || 0) + 1, history: old?.history || [] };
           }
           await this.persist(batch);
         });
+        if (this.deleted.has(batch.key)) return;
         const settled = await Promise.all(pending.map(async (kind) => {
-          const req = dataRequest(kind, c), r = await this.http(req.url, req.body);
-          await this.result(batch, kind, r);
+          const req = dataRequest(kind, c), r = await this.http(req.url, req.body, requestTimeout(this.rt.timeout, wave, timedOutKinds.has(kind)));
+          if (r.trace.error_type === "timeout") timedOutKinds.add(kind);
+          await this.result(batch, kind, r, wave === 0 ? "initial" : "retry");
           return { kind, r };
         }));
         if (this.deleted.has(batch.key)) return;
@@ -589,6 +619,13 @@
           if (rateSeen) throw new RateLimited("\u51B7\u5374\u540E\u7684\u91CD\u8BD5\u6CE2\u6B21\u518D\u6B21\u51FA\u73B0429");
           rateSeen = true;
           await this.cool(Math.max(6e4, ...rates.map((x2) => x2.r.retryAfter)) + this.rt.random() * 5e3);
+        }
+        if (wave === this.rt.retries && !batch.deferred?.attempted) {
+          const kinds = settled.filter((x2) => x2.r.retry && x2.r.status !== 429).map((x2) => x2.kind);
+          if (kinds.length) {
+            batch.deferred = { kinds, readyAt: this.rt.now() + this.rt.deferredDelay, attempted: false };
+            this.log("W", `${batch.nodeId}\uFF5C\u5373\u65F6\u91CD\u8BD5\u8017\u5C3D\uFF0C\u52A0\u5165\u4E00\u8F6E\u5EF6\u540E\u4E32\u884C\u8865\u91C7\uFF1A${kinds.join(",")}`);
+          }
         }
         pending = settled.filter((x2) => x2.r.retry && wave < this.rt.retries && !this.deleted.has(batch.key)).map((x2) => x2.kind);
         if (pending.length && !rates.length) {
@@ -601,13 +638,85 @@
         if (!state.deleted) state.processed = true;
         await this.persist(this.deleted.has(b.key) ? void 0 : b);
       });
+      if (!this.deleted.has(b.key)) await this.finalizeNode(b);
+    }
+    async finalizeNode(b, forcedReason) {
+      if (this.deleted.has(b.key) || !this.batches.has(b.key) || nodeComplete(b)) return;
+      if (!forcedReason && b.deferred && !b.deferred.attempted) return;
+      await this.serial(async () => {
+        if (this.deleted.has(b.key)) return;
+        const task = structuredClone(this.task);
+        const kinds = failedKinds(b);
+        const reason = forcedReason || kinds.map((k) => `${k}\uFF1A${b.outcomes?.[k]?.reason || (k === "getPerformanceDashboard" ? "\u65E0\u6709\u6548\u4E3B\u6570\u636E" : b.outcomes?.[k]?.status || "\u672A\u83B7\u5F97\u54CD\u5E94")}`).join("\uFF1B");
+        const failure = { node_id: b.nodeId, context: structuredClone(b.ctx), path_codes: [...b.path], failed_at: iso(), failed_interfaces: kinds, interface_results: structuredClone(b.outcomes || {}), reason };
+        task.failures ||= {};
+        task.failures[pathKey(b.ctx)] = failure;
+        delete task.nodes[pathKey(b.ctx)];
+        await this.write([{ table: "batches", key: b.key, delete: true }, { table: "tasks", value: task }]);
+        this.task.failures = task.failures;
+        this.task.nodes = task.nodes;
+        this.deleted.add(b.key);
+        this.batches.delete(b.key);
+        this.log("W", `${b.nodeId}\uFF5C\u6574\u8282\u70B9\u5931\u8D25\uFF0C\u5DF2\u6E05\u9664\u5168\u90E8\u6210\u529F\u54CD\u5E94\u5E76\u8DF3\u8FC7\uFF1B${reason}`);
+        this.changed();
+      });
+    }
+    async flushDeferred(keys) {
+      const allowed = keys ? new Set(keys) : null;
+      let previousPath = this.task?.current ? pathKey(this.task.current) : null;
+      for (const b of [...this.batches.values()]) {
+        if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+        if (b.taskId !== this.task?.id || this.deleted.has(b.key) || allowed && !allowed.has(b.key) || !b.deferred || b.deferred.attempted) continue;
+        const state = this.task.nodes[pathKey(b.ctx)];
+        if (!state) continue;
+        if (!state.counted && this.task.config.totalLimit && this.task.count >= this.task.config.totalLimit) {
+          await this.finalizeNode(b, "\u6210\u529F\u8282\u70B9\u603B\u91CF\u4E0A\u9650\u5DF2\u8FBE\u5230\uFF0C\u672A\u5B8C\u6210\u515C\u5E95\u8865\u91C7\uFF0C\u9700\u8981\u6574\u8282\u70B9\u91CD\u91C7");
+          continue;
+        }
+        const cfg = this.task.config;
+        const nodeDelay = previousPath && previousPath !== pathKey(b.ctx) ? (cfg.delayMin + this.rt.random() * (cfg.delayMax - cfg.delayMin)) * 1e3 : 0;
+        const delay = Math.max(nodeDelay, 0, b.deferred.readyAt - this.rt.now());
+        if (delay) {
+          this.log("I", `${b.nodeId}\uFF5C\u5EF6\u540E\u8865\u91C7\u7B49\u5F85${Math.ceil(delay / 1e3)}\u79D2`);
+          await this.rt.wait(delay, this.controller.signal);
+        }
+        if (this.deleted.has(b.key)) continue;
+        b.deferred.attempted = true;
+        this.task.current = b.ctx;
+        this.changed();
+        previousPath = pathKey(b.ctx);
+        await this.serial(() => this.persist(b));
+        for (const kind of b.deferred.kinds) {
+          if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+          if (this.deleted.has(b.key)) break;
+          const old = b.outcomes?.[kind];
+          if (!old || old.status !== "failed") continue;
+          await this.serial(async () => {
+            b.outcomes[kind] = { status: "pending", attempts: old.attempts + 1, history: old.history || [] };
+            await this.persist(b);
+          });
+          if (this.deleted.has(b.key)) break;
+          this.log("I", `${b.nodeId}\uFF5C\u5EF6\u540E\u8865\u91C7\uFF0C\u4EC5\u8BF7\u6C42 ${kind}\uFF0C\u8D85\u65F6${this.rt.timeout * 3 / 1e3}\u79D2`);
+          const req = dataRequest(kind, b.ctx), result = await this.http(req.url, req.body, this.rt.timeout * 3);
+          await this.result(b, kind, result, "deferred");
+          if (this.deleted.has(b.key)) break;
+          if (result.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
+          if ([401, 403].includes(result.status)) throw new AuthError(`\u5EF6\u540E\u8865\u91C7 HTTP ${result.status}`);
+          if (result.status === 429) {
+            this.task.cooldownUntil = this.rt.now() + Math.max(6e4, result.retryAfter) + this.rt.random() * 5e3;
+            await this.serial(() => this.persist(b));
+            throw new RateLimited("\u5EF6\u540E\u8865\u91C7\u9047\u5230429\uFF0C\u505C\u6B62\u5E76\u4FDD\u7559\u51B7\u5374\u65F6\u95F4\uFF0C\u4E0D\u7EE7\u7EED\u52A0\u53D1\u8BF7\u6C42");
+          }
+        }
+        if (!this.deleted.has(b.key)) await this.finalizeNode(b);
+      }
     }
     stop() {
       if (!this.running) return;
       this.log("W", "\u6536\u5230\u7EC8\u6B62\u6307\u4EE4\uFF1A\u53D6\u6D88\u7B49\u5F85\u548C\u5728\u9014\u8BF7\u6C42\uFF0C\u4FDD\u5B58\u5DF2\u6536\u5230\u7684\u6570\u636E\u5E76\u6536\u5C3E");
       this.controller.abort();
     }
-    async run(start2, config2 = DEFAULTS, resume = false) {
+    async run(start2, config2 = DEFAULTS, resume = false, repairTargets) {
       if (this.running) throw new Error("\u5DF2\u6709\u4EFB\u52A1\u6B63\u5728\u8FD0\u884C");
       if (this.fatal) throw new Error("\u5B58\u50A8\u6545\u969C\u5C1A\u672A\u6062\u590D\uFF0C\u8BF7\u5148\u4E0B\u8F7D\u5185\u5B58\u6570\u636E");
       this.running = true;
@@ -617,19 +726,23 @@
           if (!this.task) throw new Error("\u6CA1\u6709\u53EF\u7EE7\u7EED\u7684\u4EFB\u52A1");
           for (const node of Object.values(this.task.nodes)) if (!node.deleted) {
             const batch = this.batches.get(node.batchKey);
-            node.processed = !!batch && KINDS.every((k) => ["data", "empty", "no-content"].includes(batch.outcomes?.[k]?.status || ""));
+            node.processed = !!batch && (!!batch.deferred && !batch.deferred.attempted || KINDS.every((k) => ["data", "empty", "no-content"].includes(batch.outcomes?.[k]?.status || "")));
           }
           this.task.status = "running";
           this.task.reason = "";
         } else {
-          this.task = { key: "active", id: `task-${this.rt.now()}-${Math.random().toString(36).slice(2)}`, config: normalizeConfig(config2), start: structuredClone(start2), current: null, status: "running", nodes: {}, cursor: 0, count: 0, reason: "", cooldownUntil: 0, createdAt: this.rt.now() };
+          if (repairTargets && !repairTargets.length) throw new Error("\u91CD\u91C7\u6E05\u5355\u6CA1\u6709\u8282\u70B9");
+          this.task = { key: "active", id: `task-${this.rt.now()}-${Math.random().toString(36).slice(2)}`, config: normalizeConfig(repairTargets ? { ...config2, totalLimit: 0 } : config2), start: structuredClone(start2), current: null, status: "running", nodes: {}, failures: {}, mode: repairTargets ? "repair" : "traverse", repairTargets: repairTargets ? structuredClone(repairTargets) : void 0, cursor: 0, count: 0, reason: "", cooldownUntil: 0, createdAt: this.rt.now() };
         }
         this.log("I", `===== \u4EFB\u52A1${resume ? "\u7EED\u91C7" : "\u5F00\u59CB"}\uFF5C${contextLabel(this.task.start)}\uFF5C\u6BCF\u6279${this.task.config.target}\u8282\u70B9\uFF5C\u603B\u91CF${this.task.config.totalLimit || "\u4E0D\u9650"}\uFF5C\u95F4\u9694${this.task.config.delayMin}\u2013${this.task.config.delayMax}\u79D2\uFF5C\u5FAA\u73AF${Object.entries(this.task.config.levels).filter(([, v]) => v).map(([k]) => k).join("\u2192")} =====`);
         this.changed();
         await this.serial(() => this.persist());
         if (this.task.cooldownUntil > this.rt.now()) await this.rt.wait(this.task.cooldownUntil - this.rt.now(), this.controller.signal);
-        this.task.start = await this.resolveStart(this.task.start);
-        const iterator = traverse(this.task.start, this.task.config.levels, (...args) => this.directory(...args));
+        if (this.task.mode !== "repair") this.task.start = await this.resolveStart(this.task.start);
+        const targets = this.task.repairTargets;
+        const iterator = this.task.mode === "repair" && targets ? (async function* () {
+          for (const c of targets) yield structuredClone(c);
+        })() : traverse(this.task.start, this.task.config.levels, (...args) => this.directory(...args));
         let previous = false, position = 0;
         while (!this.controller.signal.aborted) {
           const atLimit = this.task.config.totalLimit && this.task.count >= this.task.config.totalLimit;
@@ -655,10 +768,21 @@
           previous = true;
           this.task.cursor = Math.max(this.task.cursor || 0, ordinal + 1);
           await this.serial(() => this.persist());
-          const pending = this.pendingKeys().filter((key) => this.batches.get(key)?.taskId === this.task.id);
-          if (pending.length >= this.task.config.target && !await this.exporter(pending, "\u6279\u91CF")) throw new Error("\u6279\u91CF\u4E0B\u8F7D\u5931\u8D25\uFF0C\u505C\u6B62\u5E76\u4FDD\u7559\u5F85\u4E0B\u8F7D\u6570\u636E");
+          const deferredCount = [...this.batches.values()].filter((b) => b.taskId === this.task.id && b.deferred && !b.deferred.attempted).length;
+          const budgetNeedsRecovery = this.task.config.totalLimit > 0 && deferredCount > 0 && this.task.count + deferredCount >= this.task.config.totalLimit;
+          if (this.pendingKeys().length >= this.task.config.target || deferredCount >= this.task.config.target || budgetNeedsRecovery) {
+            await this.flushDeferred();
+            let ready2 = this.pendingKeys().filter((key) => this.batches.get(key)?.taskId === this.task.id);
+            while (ready2.length >= this.task.config.target) {
+              if (!await this.exporter(ready2.slice(0, this.task.config.target), "\u6279\u91CF")) throw new Error("\u6279\u91CF\u4E0B\u8F7D\u5931\u8D25\uFF0C\u505C\u6B62\u5E76\u4FDD\u7559\u5F85\u4E0B\u8F7D\u6570\u636E");
+              const next2 = this.pendingKeys().filter((key) => this.batches.get(key)?.taskId === this.task.id);
+              if (next2.length >= ready2.length) break;
+              ready2 = next2;
+            }
+          }
         }
         if (this.controller.signal.aborted) throw new Stopped("\u624B\u52A8\u7EC8\u6B62");
+        await this.flushDeferred();
         this.task.status = "completed";
         this.task.reason = "\u904D\u5386\u5B8C\u6210\u6216\u8FBE\u5230\u6570\u91CF\u4E0A\u9650";
       } catch (e) {
@@ -691,18 +815,29 @@
         const remaining2 = this.pendingKeys().filter((key) => this.batches.get(key)?.taskId === this.task?.id);
         if (remaining2.length) {
           try {
-            await this.exporter(remaining2, "\u6536\u5C3E");
+            const size = this.task?.config.target || 50;
+            for (let i2 = 0; i2 < remaining2.length; i2 += size) if (!await this.exporter(remaining2.slice(i2, i2 + size), "\u6536\u5C3E")) {
+              this.log("E", "\u6536\u5C3E\u4E0B\u8F7D\u5931\u8D25\uFF0C\u672A\u5BFC\u51FA\u6570\u636E\u4FDD\u7559");
+              break;
+            }
           } catch (e) {
             this.log("E", `\u6536\u5C3E\u4E0B\u8F7D\u5931\u8D25\uFF0C\u6570\u636E\u4FDD\u7559\uFF1A${String(e)}`);
           }
         }
         this.running = false;
         this.changed();
-        this.log("I", `\u672C\u6B21\u4EFB\u52A1\u7ED3\u675F\uFF5C\u5DF2\u4FDD\u5B58${this.task?.count || 0}\u8282\u70B9\uFF5C${this.task?.status || "\u672A\u5F00\u59CB"}`);
+        this.log("I", `\u672C\u6B21\u4EFB\u52A1\u7ED3\u675F\uFF5C\u6210\u529F${this.task?.count || 0}\u8282\u70B9\uFF5C\u5931\u8D25\u5F85\u91CD\u91C7${Object.keys(this.task?.failures || {}).length}\u8282\u70B9\uFF5C${this.task?.status || "\u672A\u5F00\u59CB"}`);
+        if (this.task) {
+          try {
+            if (!await this.failureReporter(this.task)) this.log("E", "\u5931\u8D25\u91CD\u91C7log\u4E0B\u8F7D\u672A\u6210\u529F\u89E6\u53D1\uFF0C\u53EF\u4F7F\u7528\u6D6E\u7A97\u6309\u94AE\u91CD\u8BD5\u5BFC\u51FA");
+          } catch (e) {
+            this.log("E", `\u5931\u8D25\u91CD\u91C7log\u5BFC\u51FA\u5931\u8D25\uFF1A${String(e)}`);
+          }
+        }
       }
     }
     pendingKeys() {
-      return [...this.batches.values()].filter((b) => Object.keys(b.files).length > 0).map((b) => b.key);
+      return [...this.batches.values()].filter(nodeComplete).map((b) => b.key);
     }
     visible() {
       return [...this.batches.values()].sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt);
@@ -1440,6 +1575,66 @@
     return out;
   }
 
+  var MAX_RETRY_LOG_BYTES = 50 * 1024 * 1024;
+  var MAX_RETRY_NODES = 1e4;
+  var BEGIN = "=== AMZ_CATEGORY_INSIGHTS_RETRY_JSON_BEGIN ===";
+  var END = "=== AMZ_CATEGORY_INSIGHTS_RETRY_JSON_END ===";
+  function buildFailureLog(task) {
+    const nodes = Object.values(task.failures || {});
+    const pending = Object.values(task.nodes).filter((n) => !n.deleted).length;
+    const payload = { format: "amz-category-insights-retry", schema_version: 1, script_version: VERSION, task_id: task.id, task_status: task.status, exported_at: (/* @__PURE__ */ new Date()).toISOString(), failed_count: nodes.length, pending_count: pending, nodes };
+    const text2 = [
+      `Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION} \xB7 \u5931\u8D25\u91CD\u91C7\u6E05\u5355`,
+      `\u4EFB\u52A1\uFF1A${task.id}`,
+      `\u4EFB\u52A1\u72B6\u6001\uFF1A${task.status}`,
+      `\u5931\u8D25\u9700\u6574\u8282\u70B9\u91CD\u91C7\uFF1A${nodes.length} \u6761`,
+      `\u53E6\u6709\u5F85\u5904\u7406/\u5F85\u4E0B\u8F7D\u8BB0\u5F55\uFF1A${pending} \u6761\uFF08\u4E0D\u5305\u542B\u5728\u672C\u5931\u8D25\u6E05\u5355\u4E2D\uFF09`,
+      "\u5931\u8D25\u8282\u70B9\u7684\u6210\u529F\u54CD\u5E94\u5DF2\u4E22\u5F03\uFF1B\u5BFC\u5165\u540E\u4F1A\u91CD\u65B0\u8BF7\u6C42\u8BE5\u8282\u70B9\u5168\u90E8\u56DB\u4E2A\u63A5\u53E3\u3002",
+      ...nodes.flatMap((n, i2) => [`${i2 + 1}. ${contextLabel(n.context)}`, `   \u5546\u57CE\u4EE3\u7801=${n.context.store.value}\uFF1B\u7C7B\u522B\u4EE3\u7801=${n.context.category.value}\uFF1B\u5546\u54C1\u7C7B\u578B\u4EE3\u7801=${n.context.product_type.value}\uFF1B\u8282\u70B9ID=${n.node_id}`, `   \u5931\u8D25\u63A5\u53E3\uFF1A${n.failed_interfaces.join(", ")}\uFF1B${n.reason}`, ...n.failed_interfaces.map((k) => `   ${k}\uFF1AHTTP ${n.interface_results[k]?.http ?? "\u672A\u77E5"}\uFF0C\u5C1D\u8BD5${n.interface_results[k]?.attempts || 0}\u6B21\uFF0C${n.interface_results[k]?.reason || n.interface_results[k]?.status || "\u672A\u77E5"}`)]),
+      "",
+      "\u4E0B\u65B9\u4E3A\u673A\u5668\u53EF\u8BFB\u4FE1\u606F\uFF0C\u8BF7\u4FDD\u7559\u5B8C\u6574\uFF0C\u4EE5\u4FBF\u5BFC\u5165\u91CD\u91C7\u3002",
+      BEGIN,
+      JSON.stringify(payload, null, 2),
+      END,
+      ""
+    ].join("\n");
+    if (nodes.length > MAX_RETRY_NODES || new TextEncoder().encode(text2).length > MAX_RETRY_LOG_BYTES) throw new Error("\u5931\u8D25\u6E05\u5355\u8D85\u8FC7\u5BFC\u5165\u4FDD\u62A4\u9608\u503C\uFF0C\u8BF7\u4FDD\u7559\u672C\u5730\u4EFB\u52A1\u5E76\u5206\u6279\u5904\u7406");
+    return text2;
+  }
+  function text(value, label, max) {
+    if (typeof value !== "string" || !value.trim() || value.length > max || /[\u0000-\u001f\u007f]/.test(value)) throw new Error(`\u5931\u8D25\u6E05\u5355${label}\u65E0\u6548`);
+    return value;
+  }
+  function choice(value, label) {
+    if (!isObject(value)) throw new Error(`\u5931\u8D25\u6E05\u5355\u7F3A\u5C11${label}`);
+    const code = text(value.value, `${label}\u4EE3\u7801`, 256), name = text(value.label, `${label}\u540D\u79F0`, 512);
+    if (!Number.isSafeInteger(value.index) || !Number.isSafeInteger(value.total) || Number(value.index) < 1 || Number(value.total) < Number(value.index) || Number(value.total) > 1e6) throw new Error(`\u5931\u8D25\u6E05\u5355${label}\u4F4D\u7F6E\u65E0\u6548`);
+    return { value: code, label: name, index: Number(value.index), total: Number(value.total) };
+  }
+  function parseFailureLog(source) {
+    if (new TextEncoder().encode(source).length > MAX_RETRY_LOG_BYTES) throw new Error("\u5931\u8D25\u91CD\u91C7log\u8D85\u8FC750MiB");
+    const a = source.indexOf(BEGIN), b = source.indexOf(END);
+    if (a < 0 || b < a || source.indexOf(BEGIN, a + BEGIN.length) >= 0 || source.indexOf(END, b + END.length) >= 0) throw new Error("\u8BF7\u9009\u62E9\u5B8C\u6574\u7684\u5931\u8D25\u91CD\u91C7log\uFF0C\u4E0D\u662F\u666E\u901A\u8FD0\u884C\u65E5\u5FD7");
+    let raw;
+    try {
+      raw = JSON.parse(source.slice(a + BEGIN.length, b).trim());
+    } catch {
+      throw new Error("\u5931\u8D25\u91CD\u91C7log\u7684\u673A\u5668\u4FE1\u606F\u4E0D\u662F\u5408\u6CD5JSON");
+    }
+    if (!isObject(raw) || raw.format !== "amz-category-insights-retry" || raw.schema_version !== 1 || !Array.isArray(raw.nodes) || raw.nodes.length > MAX_RETRY_NODES || raw.failed_count !== raw.nodes.length) throw new Error("\u5931\u8D25\u6E05\u5355\u683C\u5F0F\u3001\u7248\u672C\u6216\u6570\u91CF\u65E0\u6548");
+    const contexts = /* @__PURE__ */ new Map();
+    for (const item of raw.nodes) {
+      if (!isObject(item) || !isObject(item.context) || !Array.isArray(item.failed_interfaces) || !item.failed_interfaces.length || !item.failed_interfaces.every((k) => KINDS.includes(k))) throw new Error("\u5931\u8D25\u8282\u70B9\u4FE1\u606F\u4E0D\u5B8C\u6574");
+      const c = item.context;
+      const ctx = { store: choice(c.store, "\u5546\u57CE"), category: choice(c.category, "\u7C7B\u522B"), product_type: choice(c.product_type, "\u5546\u54C1\u7C7B\u578B"), keyword: choice(c.keyword, "\u5173\u952E\u8BCD"), nodeId: null };
+      const node = text(item.node_id, "\u8282\u70B9ID", 32);
+      if (!/^\d+$/.test(node) || node !== ctx.keyword.value || c.nodeId !== node || !Array.isArray(item.path_codes) || JSON.stringify(item.path_codes) !== JSON.stringify(pathOf(ctx))) throw new Error("\u5931\u8D25\u6E05\u5355\u8282\u70B9ID\u6216\u5B8C\u6574\u8DEF\u5F84\u51B2\u7A81");
+      ctx.nodeId = node;
+      contexts.set(pathKey(ctx), ctx);
+    }
+    return [...contexts.values()];
+  }
+
   function saveAs(blob, filename) {
     const url = URL.createObjectURL(blob), a = document.createElement("a");
     a.href = url;
@@ -1481,6 +1676,7 @@
       source: b.taskId ? "active-api" : "legacy-capture",
       node_status: nodeStatus(b),
       interface_results: outcomes,
+      deferred_recovery: b.deferred || null,
       business_data_count: Object.values(outcomes).filter((o) => o.status === "data").length,
       empty_response_count: Object.values(outcomes).filter((o) => ["empty", "no-content"].includes(o.status)).length,
       error_count: Object.values(outcomes).filter((o) => ["failed", "interrupted"].includes(o.status)).length,
@@ -1509,7 +1705,9 @@
       }
       this.busy = true;
       try {
-        const snapshots = await this.engine.snapshots(keys);
+        const all = await this.engine.snapshots(keys);
+        const snapshots = all.filter(nodeComplete);
+        if (snapshots.length < all.length) this.log("W", "\u672A\u5B8C\u6574\u6210\u529F\u7684\u8282\u70B9\u4E0D\u5BFC\u51FA\uFF1B\u5904\u7406\u4E2D\u8282\u70B9\u7EE7\u7EED\u7B49\u5F85\uFF0C\u6700\u7EC8\u5931\u8D25\u8282\u70B9\u4F1A\u8FDB\u5165\u91CD\u91C7\u6E05\u5355");
         if (!snapshots.length) {
           this.log("W", "\u6CA1\u6709\u53EF\u4E0B\u8F7D\u7684\u8282\u70B9");
           return false;
@@ -1552,6 +1750,17 @@
         return false;
       } finally {
         this.busy = false;
+      }
+    }
+    async failures(task) {
+      try {
+        const text2 = buildFailureLog(task), count = Object.keys(task.failures || {}).length;
+        this.saver(new Blob([text2], { type: "text/plain;charset=utf-8" }), `\u5931\u8D25\u91CD\u91C7_v${VERSION}_\u5931\u8D25${count}\u6761_${stamp()}.log`);
+        this.log("I", `\u5DF2\u89E6\u53D1\u5931\u8D25\u91CD\u91C7log\u4E0B\u8F7D\uFF5C${count}\u4E2A\u8282\u70B9\uFF1B\u53EF\u5BFC\u5165\u8BE5\u6587\u4EF6\u6574\u8282\u70B9\u91CD\u91C7`);
+        return true;
+      } catch (e) {
+        this.log("E", `\u5931\u8D25\u91CD\u91C7log\u5BFC\u51FA\u5931\u8D25\uFF1A${String(e)}`);
+        return false;
       }
     }
   };
@@ -1642,6 +1851,7 @@
   var engine = new Collector(storage, cache, nativeFetch, log, () => render());
   var downloads = new Downloads(engine, log);
   engine.exporter = (keys, tag) => downloads.batches(keys, tag);
+  engine.failureReporter = (task) => downloads.failures(task);
   var ready = engine.restore();
   var config = structuredClone(DEFAULTS);
   var initialized = false;
@@ -1668,18 +1878,18 @@
     const keyword = choose(read("keyword"), cache.get("MP_CAT_PTD_BN", store.value, category.value, product_type.value), "\u5173\u952E\u8BCD");
     return { store, category, product_type, keyword, nodeId: keyword.value };
   }
-  async function start(resume = false) {
+  async function start(resume = false, repairTargets) {
     if (engine.running) return;
     await ready;
     if (!initialized) throw new Error("\u521D\u59CB\u5316\u5C1A\u672A\u5B8C\u6210");
-    const start2 = resume && engine.task ? engine.task.start : readContext();
+    const start2 = repairTargets?.[0] || (resume && engine.task ? engine.task.start : readContext());
     if (!navigator.locks) throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u4E0D\u652F\u6301 Web Locks\uFF0C\u8BF7\u4F7F\u7528\u65B0\u7248 Chrome");
     await navigator.locks.request("amz_category_node_mapper_v1_active_tab", { ifAvailable: true }, async (lock) => {
       if (!lock) {
         log("W", "\u5DF2\u6709\u91C7\u96C6\u4EFB\u52A1\u8FD0\u884C\uFF0C\u8BF7\u5148\u7EC8\u6B62\u5176\u4ED6\u6807\u7B7E\u9875\u6216\u8282\u70B9\u6620\u5C04\u91C7\u96C6\u5668");
         return;
       }
-      await engine.run(start2, config, resume);
+      await engine.run(start2, config, resume, repairTargets);
     });
   }
   function safe(work) {
@@ -1708,7 +1918,7 @@
     <div id="config"><div class="row">\u81EA\u52A8\u904D\u5386\uFF1A${["store", "category", "ptype", "keyword"].map((k) => `<label><input type="checkbox" data-level="${k}" ${config.levels[k] ? "checked" : ""}>${groupLabels[k]}</label>`).join("")}</div>
     <div class="row">\u6BCF\u6279\u4E0B\u8F7D <input id="target" type="number" min="1" value="50"> \u4E2A\u8282\u70B9\u3000\u603B\u6570\u91CF <input id="limit" type="number" min="0" value="0"> \u4E2A\u8282\u70B9\uFF080=\u4E0D\u9650\uFF09</div>
     <div class="row">\u8282\u70B9\u95F4\u968F\u673A\u5EF6\u8FDF <input id="min" type="number" min="15" value="15"> \uFF5E <input id="max" type="number" min="15" value="45"> \u79D2\uFF08\u6700\u4F4E15\u79D2\uFF09</div>
-    <div class="row"><button id="start" class="primary">\u5F00\u59CB\u6293\u53D6</button><button id="stop" class="warn">\u7EC8\u6B62\u6293\u53D6</button><button id="resume">\u7EE7\u7EED\u672A\u5B8C\u6210\u4EFB\u52A1</button></div><div id="preview"></div><div id="progress"></div></div>
+    <div class="row"><button id="start" class="primary">\u5F00\u59CB\u6293\u53D6</button><button id="stop" class="warn">\u7EC8\u6B62\u6293\u53D6</button><button id="resume">\u7EE7\u7EED\u672A\u5B8C\u6210\u4EFB\u52A1</button></div><div class="row"><button id="retry-import">\u5BFC\u5165\u5931\u8D25\u91CD\u91C7 log</button><button id="retry-download">\u4E0B\u8F7D\u5931\u8D25\u91CD\u91C7 log</button><input id="retry-file" type="file" accept=".log,text/plain" hidden></div><div id="preview"></div><div id="progress"></div></div>
     <div id="actions" class="row"><button id="all">\u5168\u9009</button><button id="invert">\u53CD\u9009</button><button id="download" class="primary">\u4E0B\u8F7D\u9009\u4E2D</button><button id="delete" class="danger">\u5220\u9664\u9009\u4E2D</button><button id="delete-all" class="danger">\u5220\u9664\u5168\u90E8</button></div>
     <div id="workspace"><div id="list"></div><div id="divider" role="separator" tabindex="0" aria-label="\u8C03\u6574\u8282\u70B9\u5217\u8868\u4E0E\u8FD0\u884C\u65E5\u5FD7\u9AD8\u5EA6" aria-orientation="horizontal" aria-controls="list log-section" title="\u62D6\u52A8\u8C03\u6574\u5217\u8868\u548C\u65E5\u5FD7\u9AD8\u5EA6\uFF1B\u652F\u6301\u4E0A\u4E0B\u65B9\u5411\u952E"></div><div id="log-section"><div id="loghead"><b>\u8FD0\u884C\u65E5\u5FD7</b><div><button id="log-download">\u4E0B\u8F7D\u65E5\u5FD7</button> <button id="log-clear">\u6E05\u7A7A\u65E5\u5FD7</button></div></div><div id="logs"></div></div></div></section>`;
     const element = (id) => root.getElementById(id);
@@ -1738,6 +1948,27 @@
     });
     button("stop", () => engine.stop());
     button("resume", () => start(true));
+    button("retry-import", () => {
+      if (!engine.running) input("retry-file").click();
+    });
+    input("retry-file").onchange = safe(async () => {
+      const file = input("retry-file").files?.[0];
+      input("retry-file").value = "";
+      if (!file) return;
+      if (engine.running) throw new Error("\u8BF7\u5148\u7ED3\u675F\u5F53\u524D\u4EFB\u52A1\u518D\u5BFC\u5165\u91CD\u91C7\u6E05\u5355");
+      if (file.size > MAX_RETRY_LOG_BYTES) throw new Error("\u5931\u8D25\u91CD\u91C7log\u8D85\u8FC750MiB");
+      const targets = parseFailureLog(await file.text());
+      if (!targets.length) {
+        log("I", "\u8BE5\u5931\u8D25\u6E05\u5355\u4E3A0\u6761\uFF0C\u65E0\u9700\u91CD\u91C7");
+        return;
+      }
+      updateConfig();
+      config.totalLimit = 0;
+      input("limit").value = "0";
+      log("I", `\u8BC6\u522B\u5230${targets.length}\u4E2A\u552F\u4E00\u5931\u8D25\u8282\u70B9\uFF0C\u5F00\u59CB\u6574\u8282\u70B9\u91CD\u91C7\uFF1B\u4EC5\u5904\u7406\u6E05\u5355\u8DEF\u5F84\uFF0C\u603B\u91CF\u4E0A\u9650\u8BBE\u4E3A0\uFF0C\u4FDD\u7559\u5206\u6279\u4E0E\u5EF6\u8FDF\u8BBE\u7F6E`);
+      await start(false, targets);
+    });
+    button("retry-download", () => engine.task ? downloads.failures(engine.task) : void 0);
     button("all", () => {
       for (const b of engine.visible()) b.checked = true;
       render();
@@ -1816,7 +2047,7 @@ ${logs.map((l) => `[${l.at}] [${l.level}] ${l.message}`).join("\n")}`], { type: 
     };
     render = () => {
       const running = engine.running, visible = engine.visible();
-      element("stats").textContent = `\u8282\u70B9 ${visible.length} \xB7 \u6587\u4EF6 ${visible.reduce((s, b) => s + Object.keys(b.files).length, 0)}`;
+      element("stats").textContent = `\u8282\u70B9 ${visible.length} \xB7 \u5F85\u91CD\u91C7 ${Object.keys(engine.task?.failures || {}).length}`;
       for (const cb of root.querySelectorAll("[data-level]")) {
         const k = cb.dataset.level;
         cb.checked = config.levels[k];
@@ -1826,6 +2057,8 @@ ${logs.map((l) => `[${l.at}] [${l.level}] ${l.message}`).join("\n")}`], { type: 
       element("start").disabled = running || !initialized;
       element("stop").disabled = !running;
       element("resume").disabled = running || !initialized || !engine.task;
+      element("retry-import").disabled = running || !initialized;
+      element("retry-download").disabled = running || !engine.task;
       element("start").textContent = running ? "\u6293\u53D6\u4E2D\u2026" : "\u5F00\u59CB\u6293\u53D6";
       let c = engine.task?.current || engine.task?.start;
       if (!running) {
@@ -1835,7 +2068,7 @@ ${logs.map((l) => `[${l.at}] [${l.level}] ${l.message}`).join("\n")}`], { type: 
         } catch (e) {
           element("preview").textContent = String(e);
         }
-      } else element("preview").textContent = `\u5F53\u524D\uFF1A${c ? contextLabel(c) : "\u9A8C\u8BC1\u8D77\u70B9\u76EE\u5F55"}\uFF5C\u4EFB\u52A1\u8303\u56F4\u5DF2\u9501\u5B9A`;
+      } else element("preview").textContent = `\u5F53\u524D\uFF1A${c ? contextLabel(c) : "\u9A8C\u8BC1\u8D77\u70B9\u76EE\u5F55"}\uFF5C${engine.task?.mode === "repair" ? "\u6309\u5931\u8D25\u6E05\u5355\u91CD\u91C7" : "\u4EFB\u52A1\u8303\u56F4\u5DF2\u9501\u5B9A"}`;
       if (!c) {
         try {
           c = readContext();
