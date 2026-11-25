@@ -5,6 +5,8 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { engine as e } from './load-desensitizer-test.mjs';
 
+const sampleDirectory = process.env.AIOZ_REAL_SAMPLE_DIR;
+if (!sampleDirectory) throw new Error('Set AIOZ_REAL_SAMPLE_DIR to a directory containing the local workbook samples.');
 const root = process.cwd();
 const output = path.resolve(process.env.AIOZ_BROWSER_OUTPUT ?? '.test-output/real-20261015-after');
 await mkdir(output, { recursive: true });
@@ -16,7 +18,7 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method !== 'GET') { response.writeHead(405).end(); return; }
     let pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-    if (!pathname.startsWith('/xlsx-desensitizer/') && pathname !== '/' && pathname !== '/index.html' && pathname !== '/favicon.ico') { response.writeHead(404).end(); return; }
+    if (!pathname.startsWith('/xlsx-desensitizer/') && pathname !== '/' && pathname !== '/index.html' && pathname !== '/site.css' && pathname !== '/favicon.ico') { response.writeHead(404).end(); return; }
     if (pathname === '/favicon.ico') { response.writeHead(204).end(); return; }
     let filename = path.resolve(root, `.${pathname}`);
     if (!filename.startsWith(`${root}${path.sep}`) && filename !== root) { response.writeHead(403).end(); return; }
@@ -31,7 +33,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 let browser;
 try {
   browser = await chromium.launch({ headless: true, ...(process.env.AIOZ_BROWSER_CHANNEL ? { channel: process.env.AIOZ_BROWSER_CHANNEL } : {}) });
-  const dir=path.resolve(process.env.AIOZ_REAL_SAMPLE_DIR ?? '../../本地项目/工作簿脱敏与恢复/测试数据/原始样本');
+  const dir=path.resolve(sampleDirectory);
   const names=(await (await import('node:fs/promises')).readdir(dir)).filter(n=>n.endsWith('.xlsx')).sort();assert.equal(names.length,3,'Expected the current three workbook samples');
   const inputs=names.map(n=>path.join(dir,n)),originals=await Promise.all(inputs.map(async p=>new Uint8Array(await readFile(p))));const hashes=await Promise.all(originals.map(e.sha256));
   const pureScan=await e.scanFiles(originals.map((bytes,i)=>new File([bytes],names[i])));const validIndexes=pureScan.files.flatMap((f,i)=>f.error?[]:[i]);assert.equal(validIndexes.length,3);
@@ -80,7 +82,7 @@ try {
   await page.locator('#clear').click();assert.equal(await page.locator('#pickerCandidates').innerText(),'');assert.equal(await page.locator('#run').isDisabled(),true);
   for(const [i,input] of inputs.entries())assert.equal(await e.sha256(new Uint8Array(await readFile(input))),hashes[i]);
   assert.deepEqual(errors,[]);assert.ok(network.every(r=>r.method==='GET'&&r.url.startsWith(base)&&r.body===null));
-  const summary={date:'2026-10-15',names,sourceHashes:hashes,originalsUnchanged:true,initial,validFiles:validIndexes.map(i=>names[i]),blockedFiles:pureScan.files.filter(f=>f.error).map(f=>({name:f.name,error:f.error})),checkedCells,sharedChecks,dictionaryMappings:dict.mappings.length,pickerFarFieldPassed:true,stableThreeColumnsPassed:true,mobilePassed:true,offlinePassed:true,consoleErrors:errors,network};await writeFile(path.join(output,'validation.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify(summary,null,2));await context.close();
+  const summary={date:'2026-10-15',names,sourceHashes:hashes,originalsUnchanged:true,initial,validFiles:validIndexes.map(i=>names[i]),blockedFiles:pureScan.files.filter(f=>f.error).map(f=>({name:f.name,error:f.error})),checkedCells,sharedChecks,dictionaryMappings:dict.mappings.length,pickerFarFieldPassed:true,stableThreeColumnsPassed:true,mobilePassed:true,offlinePassed:true,consoleErrors:errors,network};await writeFile(path.join(output,'validation.json'),JSON.stringify(summary,null,2));console.log('Workbook validation passed. Detailed results were saved locally.');await context.close();
 } finally {
   if (browser) await browser.close();
   await new Promise((resolve) => server.close(resolve));

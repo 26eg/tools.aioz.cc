@@ -2,3 +2,4 @@ node_modules/
 .test-output/
 .DS_Store
 *.tsbuildinfo
+.pages-dist/

@@ -38,7 +38,7 @@
     }
     .privacy .lock { font-size: 1.08rem; line-height: 1; }
     .workspace-grid {
-      align-items: start; display: grid; gap: 18px; grid-template-columns: 340px minmax(0, 1fr); margin-top: 18px;
+      align-items: start; display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr) 340px; margin-top: 18px;
     }
     .panel {
       background: #fff; border: 1px solid var(--border); border-radius: 12px;
@@ -146,16 +146,9 @@
     .result-note { color: #7a8494; font-size: .82rem; }
     .hidden { display: none !important; }
 
-    footer {
-      color: #999; display: flex; flex-wrap: wrap; font-size: .8rem; gap: 6px 18px;
-      justify-content: center; line-height: 1.6; margin-top: 22px; text-align: center;
-    }
-    footer a { color: #999; }
-    footer a:hover { color: var(--blue); }
     @media (max-width: 900px) {
       .workspace-grid { grid-template-columns: 1fr; }
       .guide-panel { position: static; }
-      .merge-panel { grid-row: 1; }
     }
     @media (max-width: 640px) {
       .container { padding: 28px 14px; }
@@ -164,13 +157,13 @@
       .file-actions { grid-column: 2; }
       .selected-head { align-items: flex-start; flex-direction: column; gap: 2px; }
       .action-row .btn { flex: 1 1 100%; }
-      footer { display: block; }
     }
   </style>
+  <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-  <main class="container">
-    <div class="breadcrumb"><a href="/">← 返回 AIOZ 效能工坊</a></div>
+  <main class="container aioz-wide">
+    <div class="breadcrumb"><a class="aioz-back" href="/">← 返回 AIOZ 效能工坊</a></div>
     <header>
       <h1>XLSX 工作簿批量合并</h1>
       <p>自动识别表头、对齐字段，把多个工作簿的第一个工作表合并为一张表</p>
@@ -182,16 +175,6 @@
     </div>
 
     <div class="workspace-grid">
-      <aside class="panel guide-panel" aria-labelledby="instructionsTitle">
-        <h2 id="instructionsTitle">合并规则</h2>
-        <ol class="steps">
-          <li>至少选择 2 个 <code>.xlsx</code>；列表第 1 项作为基准文件和输出文件名。</li>
-          <li>仅处理每个工作簿的第 1 个工作表，并在前 50 行识别表头、自动对齐字段。</li>
-          <li>输出仅保留 1 个工作表和 1 行表头；数据不去重，格式、超链接、行高与列宽尽量原样保留。</li>
-          <li>输出文件名为 <code>时间戳_第一个文件名.xlsx</code>。</li>
-        </ol>
-        <div class="compatibility">若有效工作表包含无法可靠迁移的图片、表格对象或条件格式，工具会停止并明确提示，避免静默丢失内容。</div>
-      </aside>
 
       <section class="panel merge-panel" aria-labelledby="filesTitle">
         <div class="merge-head">
@@ -223,6 +206,17 @@
           <span class="form-error" id="formError" role="alert"></span>
         </div>
       </section>
+
+      <aside class="panel guide-panel" aria-labelledby="instructionsTitle">
+        <h2 id="instructionsTitle">合并规则</h2>
+        <ol class="steps">
+          <li>至少选择 2 个 <code>.xlsx</code>；列表第 1 项作为基准文件和输出文件名。</li>
+          <li>仅处理每个工作簿的第 1 个工作表，并在前 50 行识别表头、自动对齐字段。</li>
+          <li>输出仅保留 1 个工作表和 1 行表头；数据不去重，格式、超链接、行高与列宽尽量原样保留。</li>
+          <li>输出文件名为 <code>时间戳_第一个文件名.xlsx</code>。</li>
+        </ol>
+        <div class="compatibility">若有效工作表包含无法可靠迁移的图片、表格对象或条件格式，工具会停止并明确提示，避免静默丢失内容。</div>
+      </aside>
     </div>
 
     <section class="panel hidden" id="progressPanel" aria-live="polite">
@@ -237,7 +231,7 @@
     <section class="panel hidden" id="resultPanel" aria-labelledby="resultTitle">
       <h2 id="resultTitle">合并结果</h2>
       <p class="result-summary" id="resultSummary"></p>
-      <div class="report-wrap">
+      <div class="report-wrap" tabindex="0" role="region" aria-label="合并结果明细">
         <table>
           <thead>
             <tr><th>#</th><th>文件名</th><th>读取工作表</th><th>表头行</th><th>数据行</th><th>字段对齐</th></tr>
@@ -251,10 +245,12 @@
       </div>
     </section>
 
-    <footer>
-      <p><a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a></p>
+    <footer class="aioz-footer">
+      <p class="aioz-footer-links">
+        <a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a>
+      </p>
       <p>© 2026 AIOZ 效能工坊 · 保留所有权利</p>
-      <p>Designed by 26eg丨Powered by Claude</p>
+      <p>Designed by 26eg · AI-assisted development</p>
     </footer>
   </main>
 

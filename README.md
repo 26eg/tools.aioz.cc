@@ -2,6 +2,10 @@
 
 团队内部工具集合，部署于 Cloudflare Pages，访问地址：<https://tools.aioz.cc>
 
+## 开发署名
+
+项目初版及部分早期工具由 Claude 辅助开发。后续开发主要使用 Antigravity 和 Codex，涉及 Gemini 系列及 GPT-5.6／GPT-6 系列模型。
+
 ## 目录结构
 
 | 路径 | 说明 |
@@ -75,23 +79,21 @@ npm run dev            # http://127.0.0.1:4175/xlsx-desensitizer/
 ```bash
 # 自带的 Node 单元/集成测试使用合成数据。
 npm test
-# 真实样本回归，默认读取本地项目/工作簿脱敏与恢复/测试数据/原始样本/日利润报表-2026-09.xlsx。
+# 私有样本回归。先在本地设置 AIOZ_REAL_SAMPLE_FILE 和 AIOZ_REAL_SAMPLE_DIR。
 npm run test:sample
-# 当前更新后的三文件实操与日期占位值、分组展示验收。
-AIOZ_BROWSER_CHANNEL=chrome npm run test:current-samples
-# 两份异名表头真实样本 + 1,000/10,000 行合成性能样本。
 npm run test:batch-sample
-# 也可显式传入源文件和本地输出目录。
-npm run test:sample -- "/path/to/input.xlsx" "/path/to/test-results"
+AIOZ_BROWSER_CHANNEL=chrome npm run test:current-samples
+# 可选位置参数覆盖单文件样本及输出目录。
+npm run test:sample -- "$AIOZ_REAL_SAMPLE_FILE" "$AIOZ_BROWSER_OUTPUT"
 # 浏览器实测：首次需要安装 Chromium；已有 Chrome 时可设置 AIOZ_BROWSER_CHANNEL=chrome。
 npx playwright install chromium
-npm run test:browser -- "/path/to/input.xlsx"
+npm run test:browser -- "$AIOZ_REAL_SAMPLE_FILE"
 # 独立读回与数值核验：Python 3.11+，需要 openpyxl。
 python3.11 scripts/verify-desensitizer-output.py "/path/to/test-results"
 python3.11 scripts/verify-desensitizer-batch-output.py "/path/to/batch-test-results"
 ```
 
-`test:browser` 验证基础三项下载、多文件异名字段、选表与排除、批量恢复、新旧字典续批、80,008 单元格性能样本、断网运行、无上传请求、控制台、390px 布局、清空、拖放和取消。浏览器证据默认存入已忽略的 `.test-output/`。`test:sample` 的源文件与输出位于仓库外，不修改原始样本。当前验收记录见 `xlsx-desensitizer/VALIDATION.md`。
+`test:browser` 验证基础三项下载、多文件异名字段、选表与排除、批量恢复、新旧字典续批、80,008 单元格性能样本、断网运行、无上传请求、控制台、390px 布局、清空、拖放和取消。浏览器证据默认存入已忽略的 `.test-output/`。`test:sample` 显式读取本地源文件，默认输出到已忽略的 `.test-output/`，并校验原始样本未被改写。当前验收记录见 `xlsx-desensitizer/VALIDATION.md`。
 
 恢复记录：2026-11-04 从原会话重放恢复 2026-10-15 本地版本；保留其他工具的在线更新。原源码、恢复前备份与验收证据位于仓库外本地项目目录。
 
@@ -102,6 +104,7 @@ python3.11 scripts/verify-desensitizer-batch-output.py "/path/to/batch-test-resu
 ZIP 新增 `字段关联说明.md` / `字段关联清单.json`，来自本次实际逐列配置，含字典系列、稳定组 ID、输出文件/工作表、原表头、列号与策略，不含原始单元格值或恢复映射。可以与脱敏工作簿一起交给 LLM；恢复字典不得随同共享。字段名和文件名仍需检查是否敏感。
 
 ```bash
+# 先在本地设置 AIOZ_REAL_SAMPLE_DIR。
 AIOZ_BROWSER_CHANNEL=chrome npm run test:matrix-browser
 ```
 
@@ -111,3 +114,12 @@ AIOZ_BROWSER_CHANNEL=chrome npm run test:matrix-browser
 - 构建输出目录：`/`（仓库根目录）
 
 保持现有 Pages 构建配置可直接发布：`xlsx-desensitizer/dist/` 的浏览器包和组件许可已纳入 Git，开发修改后必须先 `npm run build` 并提交生成包。无需生产服务器解析任何 XLSX/HTML。Pages 的 `node_modules` 排除行为参见 [官方上传实现](https://github.com/cloudflare/workers-sdk/blob/main/packages/wrangler/src/pages/validate.ts)；隐私响应头由根目录 `_headers` 仅作用于新工具路由，参见 [Cloudflare Pages headers 文档](https://developers.cloudflare.com/pages/configuration/headers/)。
+
+### 最小化发布目录预览
+
+```bash
+node scripts/build-pages.mjs
+node scripts/serve-local.mjs .pages-dist
+```
+
+本地预览地址为 `http://127.0.0.1:4175/`。启动预览后，在另一终端运行 `node scripts/test-pages-browser.mjs`，截图默认写入 `.test-output/pages-preview/`。该构建从显式清单复制运行资源并在输出目录生成脚本清单。审阅通过后，Cloudflare Pages 的构建命令设为 `node scripts/build-pages.mjs`，输出目录设为 `.pages-dist`。两项配置需在同一次发布切换。

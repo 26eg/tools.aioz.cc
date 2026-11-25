@@ -189,14 +189,12 @@
     .msg.ok { color: #1e7a3d; }
     .msg.warn { color: #b06000; }
 
-    footer { margin-top: 40px; text-align: center; font-size: .85em; color: #999; line-height: 1.9; }
-    footer a { color: #999; }
-    footer a:hover { color: #1a73e8; }
   </style>
+  <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-  <div class="container">
-    <div class="breadcrumb"><a href="/">← 返回 AIOZ 效能工坊</a></div>
+  <div class="container aioz-compact">
+    <div class="breadcrumb"><a class="aioz-back" href="/">← 返回 AIOZ 效能工坊</a></div>
     <header>
       <h1>二维码 · 生成 &amp; 解码</h1>
       <p>把文本 / 网址生成二维码，或从图片中识别二维码内容</p>
@@ -207,9 +205,9 @@
       <span>本工具<b>完全在你的浏览器本地运行</b>，不涉及任何信息的上传与下载，服务器不存储任何数据。所有生成与识别均在本机完成，可断网使用。</span>
     </div>
 
-    <div class="tabs">
-      <div class="tab active" data-tab="gen">生成二维码</div>
-      <div class="tab" data-tab="dec">识别 / 解码</div>
+    <div class="tabs" role="group" aria-label="二维码工具模式">
+      <button type="button" class="tab active" data-tab="gen" aria-controls="panel-gen" aria-pressed="true">生成二维码</button>
+      <button type="button" class="tab" data-tab="dec" aria-controls="panel-dec" aria-pressed="false">识别 / 解码</button>
     </div>
 
     <!-- ============ 生成 ============ -->
@@ -275,7 +273,7 @@
             <button class="btn btn-secondary" id="btnDownloadEps">⬇ EPS</button>
             <button class="btn btn-secondary" id="btnCopyImg">📋 复制图片</button>
           </div>
-          <div class="msg" id="genMsg"></div>
+          <div class="msg" id="genMsg" role="status"></div>
         </div>
       </div>
     </section>
@@ -283,7 +281,7 @@
     <!-- ============ 解码 ============ -->
     <section class="panel hidden" id="panel-dec">
       <div id="decInputArea">
-        <div class="dropzone" id="dropzone">
+        <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择要解码的二维码图片">
           <div class="big">🖼️</div>
           <div>点击选择图片，或将图片拖拽到此处</div>
           <div class="sub">也支持直接粘贴（Ctrl / ⌘ + V）· 或使用摄像头扫描</div>
@@ -309,7 +307,7 @@
           </div>
         </div>
 
-        <div class="msg" id="decMsg"></div>
+        <div class="msg" id="decMsg" role="status"></div>
 
         <div class="btn-row">
           <button class="btn btn-secondary" id="btnDecodeNext">解码下一个</button>
@@ -317,10 +315,12 @@
       </div>
     </section>
 
-    <footer>
-      <p><a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a></p>
+    <footer class="aioz-footer">
+      <p class="aioz-footer-links">
+        <a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a>
+      </p>
       <p>© 2026 AIOZ 效能工坊 · 保留所有权利</p>
-      <p>Designed by 26eg丨Powered by Claude</p>
+      <p>Designed by 26eg · AI-assisted development</p>
     </footer>
   </div>
 
@@ -435,8 +435,10 @@
     var panelDec = document.getElementById('panel-dec');
     tabs.forEach(function (t) {
       t.addEventListener('click', function () {
-        tabs.forEach(function (x) { x.classList.remove('active'); });
-        t.classList.add('active');
+        tabs.forEach(function (button) {
+          button.classList.toggle('active', button === t);
+          button.setAttribute('aria-pressed', String(button === t));
+        });
         var isGen = t.dataset.tab === 'gen';
         panelGen.classList.toggle('hidden', !isGen);
         panelDec.classList.toggle('hidden', isGen);
@@ -783,6 +785,11 @@
     }
 
     dropzone.addEventListener('click', function () { fileInput.click(); });
+    dropzone.addEventListener('keydown', function (event) {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      fileInput.click();
+    });
     fileInput.addEventListener('change', function () {
       if (fileInput.files && fileInput.files[0]) handleImageFile(fileInput.files[0]);
       fileInput.value = '';

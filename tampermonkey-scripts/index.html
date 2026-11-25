@@ -51,14 +51,12 @@
     .howto h3 { font-size: 1em; color: #333; margin-bottom: 10px; }
     .howto ol { padding-left: 20px; line-height: 1.9; }
     .howto a { color: #1a73e8; }
-    footer { margin-top: 48px; text-align: center; font-size: .85em; color: #999; line-height: 1.9; }
-    footer a { color: #999; }
-    footer a:hover { color: #1a73e8; }
   </style>
+  <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-  <div class="container">
-    <div class="breadcrumb"><a href="/">← 返回 AIOZ 效能工坊</a></div>
+  <div class="container aioz-compact">
+    <div class="breadcrumb"><a class="aioz-back" href="/">← 返回 AIOZ 效能工坊</a></div>
     <header>
       <h1>🐒 篡改猴脚本</h1>
       <p>团队维护的 Tampermonkey 用户脚本合集。点击「安装」即可添加到篡改猴，之后脚本更新时篡改猴会自动检测新版本并提示或自动更新。</p>
@@ -75,10 +73,12 @@
       </ol>
     </div>
 
-    <footer>
-      <p><a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a></p>
+    <footer class="aioz-footer">
+      <p class="aioz-footer-links">
+        <a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a>
+      </p>
       <p>© 2026 AIOZ 效能工坊 · 保留所有权利</p>
-      <p>Designed by 26eg丨Powered by Claude</p>
+      <p>Designed by 26eg · AI-assisted development</p>
     </footer>
   </div>
 

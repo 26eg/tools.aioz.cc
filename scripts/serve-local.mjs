@@ -3,7 +3,8 @@ import { readFile, stat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const root = await realpath(path.resolve(repo, process.argv[2] ?? '.'));
 const port = Number(process.env.AIOZ_PORT ?? 4175);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('AIOZ_PORT must be a valid port.');
 const headerFile = await readFile(path.join(root, '_headers'), 'utf8');
@@ -13,8 +14,12 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method !== 'GET' && request.method !== 'HEAD') { response.writeHead(405).end(); return; }
     const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
+    if (pathname === '/xlsx-image-link-to-image-tool.html') {
+      response.writeHead(301, { Location: '/xlsx-image-link-to-image-tool/' }).end();
+      return;
+    }
     if (pathname === '/favicon.ico') { response.writeHead(204).end(); return; }
-    if (!/^\/(?:index\.html)?$/.test(pathname) && !/^\/(?:xlsx-desensitizer|xlsx-workbook-merger|xlsx-image-link-to-image-tool|qr-code-tool|tampermonkey-scripts)\//.test(pathname)) { response.writeHead(404).end(); return; }
+    if (!/^\/(?:index\.html|site\.css)?$/.test(pathname) && !/^\/(?:xlsx-desensitizer|xlsx-workbook-merger|xlsx-image-link-to-image-tool|qr-code-tool|tampermonkey-scripts)\//.test(pathname)) { response.writeHead(404).end(); return; }
     if (pathname.split('/').some((part) => part.startsWith('.')) || pathname.includes('/src/')) { response.writeHead(404).end(); return; }
     let file = path.resolve(root, `.${pathname}`);
     if ((await stat(file)).isDirectory()) file = path.join(file, 'index.html');

@@ -73,22 +73,20 @@
         }
         #downloadLinkContainer a:hover { opacity: .9; }
 
-        footer { margin-top: 40px; text-align: center; font-size: .85em; color: #999; line-height: 1.9; }
-        footer a { color: #999; }
-        footer a:hover { color: #1a73e8; }
     </style>
+  <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-    <div class="container">
-        <div class="breadcrumb"><a href="/">← 返回 AIOZ 效能工坊</a></div>
+    <div class="container aioz-compact">
+        <div class="breadcrumb"><a class="aioz-back" href="/">← 返回 AIOZ 效能工坊</a></div>
         <header>
             <h1>XLSX 图片链接转图片工具</h1>
             <p>读取 Excel 表格 B 列的图片链接，下载后作为图片插入对应单元格，在本地生成新文件</p>
         </header>
 
         <section class="panel">
-            <div class="desc">
-                <p><strong>功能说明（v2.2）：</strong></p>
+            <details class="desc">
+                <summary>查看处理规则与兼容说明</summary>
                 <ol>
                     <li>选择格式为 <code>.xlsx</code> 的源文件后，工具会读取第一个工作表的 <strong>B列</strong>。</li>
                     <li>从第2行开始，如果B列单元格内容是图片链接 (http/https)，工具会下载该图片并将其作为浮动图片插入到该单元格的位置。</li>
@@ -106,32 +104,36 @@
                     <li>支持多行并行下载加快处理速度，当前并行处理数量可在下方调整（越小越稳定但越慢，最小值为 1）。</li>
                 </ol>
                 <div class="note">注意：如果图片链接本地网络环境无法访问，或图片服务器禁止跨域访问 (CORS)，图片可能无法被下载。</div>
-            </div>
+            </details>
 
             <div class="controls">
+                <label for="fileInput">选择工作簿</label>
                 <input type="file" id="fileInput" accept=".xlsx" />
                 <div class="concurrency-row">
                     <label for="concurrencyInput">并行处理数量：</label>
                     <input type="number" id="concurrencyInput" value="1" min="1">
                 </div>
+                <p class="note">工作簿在浏览器中处理。点击开始后，浏览器会向链接指向的服务器请求图片，受服务器跨域规则限制。</p>
                 <div class="button-container">
                     <button id="processButton">开始处理</button>
-                    <span id="noFileError"></span>
+                    <span id="noFileError" role="alert"></span>
                 </div>
-                <div id="status" style="display: none;"></div>
+                <div id="status" role="status" aria-live="polite" style="display: none;"></div>
                 <div id="downloadLinkContainer"></div>
             </div>
         </section>
 
-        <footer>
-            <p><a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a></p>
-            <p>© 2026 AIOZ 效能工坊 · 保留所有权利</p>
-            <p>Designed by 26eg丨Powered by Gemini 2.5 Pro</p>
+        <footer class="aioz-footer">
+          <p class="aioz-footer-links">
+            <a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a>
+          </p>
+          <p>© 2026 AIOZ 效能工坊 · 保留所有权利</p>
+          <p>Designed by 26eg · AI-assisted development</p>
         </footer>
     </div>
 
     <!-- 引入 ExcelJS 库 -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+    <script src="/xlsx-workbook-merger/vendor/exceljs.min.js?v=4.3.0"></script>
 
     <script>
         // --- 全局变量定义：获取页面上的主要交互元素 ---
@@ -316,10 +318,14 @@
                     const originalFileExt = file.name.substring(file.name.lastIndexOf('.'));
                     const newFileName = `${getFormattedDateTime()} ${originalFileName} [已处理]${originalFileExt}`;
 
-                    downloadLinkContainer.innerHTML = `<a href="${objectURL}" download="${newFileName}">下载处理好的文件</a>`;
+                    const download = document.createElement('a');
+                    download.href = objectURL;
+                    download.download = newFileName;
+                    download.textContent = '下载处理好的文件';
+                    downloadLinkContainer.replaceChildren(download);
 
                     const summaryMessage = `处理完成！${successCount}/${totalRows} 图片链接已补全，${failureCount} 个链接无效或处理失败！`;
-                    updateStatus(summaryMessage, 'success');
+                    updateStatus(summaryMessage, failureCount ? 'warning' : 'success');
 
                 } catch (error) {
                     console.error('处理过程中发生严重错误:', error);

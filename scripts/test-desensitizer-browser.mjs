@@ -6,7 +6,9 @@ import { chromium } from 'playwright';
 import { engine as e } from './load-desensitizer-test.mjs';
 
 const root = process.cwd();
-const samplePath = path.resolve(process.argv[2] ?? '../../本地项目/工作簿脱敏与恢复/测试数据/原始样本/日利润报表-2026-09.xlsx');
+const sampleFile = process.argv[2] || process.env.AIOZ_REAL_SAMPLE_FILE;
+if (!sampleFile) throw new Error('Provide a sample file argument or set AIOZ_REAL_SAMPLE_FILE.');
+const samplePath = path.resolve(sampleFile);
 const output = path.resolve(process.env.AIOZ_BROWSER_OUTPUT ?? '.test-output/browser');
 await mkdir(output, { recursive: true });
 const source = new Uint8Array(await readFile(samplePath));
@@ -24,7 +26,7 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method !== 'GET') { response.writeHead(405).end(); return; }
     let pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-    if (!pathname.startsWith('/xlsx-desensitizer/') && pathname !== '/' && pathname !== '/index.html' && pathname !== '/favicon.ico') { response.writeHead(404).end(); return; }
+    if (!pathname.startsWith('/xlsx-desensitizer/') && pathname !== '/' && pathname !== '/index.html' && pathname !== '/site.css' && pathname !== '/favicon.ico') { response.writeHead(404).end(); return; }
     if (pathname === '/favicon.ico') { response.writeHead(204).end(); return; }
     let filename = path.resolve(root, `.${pathname}`);
     if (!filename.startsWith(`${root}${path.sep}`) && filename !== root) { response.writeHead(403).end(); return; }
@@ -255,7 +257,7 @@ try {
   assert.deepEqual(errors, []);
   const summary = { browser: browser.version(), workflows: ['mask ZIP', 'restore XLSX', 'restore HTML', 'batch heterogeneous ASIN joins', 'per-file multiple sheet selection', 'batch restore', 'v2 continuation', 'v1 dictionary upgrade', 'three workbook header alignment', 'drag and keyboard relations', 'unlink relations', 'store alias suffix protection'], offlinePassed: true, browserPerformance, sampleMappingCount: dict.mappings.length, networkRequests: network, consoleErrors: errors, mobileWidth: 390, sourceSha256: await e.sha256(source), output };
   await writeFile(path.join(output, 'browser-validation.json'), JSON.stringify(summary, null, 2));
-  console.log(JSON.stringify(summary, null, 2));
+  console.log('Workbook validation passed. Detailed results were saved locally.');
   await context.close();
 } finally {
   if (browser) await browser.close();

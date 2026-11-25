@@ -1,0 +1,65 @@
+:root {
+  --aioz-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --aioz-bg: #f2f5f9;
+  --aioz-text: #25334a;
+  --aioz-muted: #53647c;
+  --aioz-blue: #1759b4;
+  --aioz-border: #dbe3ed;
+}
+
+body {
+  background: var(--aioz-bg);
+  color: var(--aioz-text);
+  font-family: var(--aioz-font);
+}
+
+.aioz-compact { max-width: 880px; }
+.aioz-wide { max-width: 1180px; }
+.aioz-workspace { max-width: 1800px; }
+.container > header h1 { color: var(--aioz-blue); line-height: 1.25; }
+.container > header > p, .container > header .subtitle { color: var(--aioz-muted); }
+body a.aioz-back { color: var(--aioz-blue); }
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--aioz-blue);
+  outline-offset: 3px;
+}
+body :is(.card, .panel) { border-color: var(--aioz-border); border-radius: 12px; }
+body :is(.btn-primary, .btn-install, button.primary, #processButton) {
+  background: var(--aioz-blue);
+  color: white;
+}
+body :is(.btn-secondary, .btn-source, button.secondary) {
+  border-color: var(--aioz-border);
+  color: var(--aioz-blue);
+}
+body :is(.tab.active, .tabs [aria-selected="true"]) { color: var(--aioz-blue); background: #eaf2ff; }
+body .card :is(.date, .badge, p) { color: var(--aioz-muted); }
+.aioz-home .grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); }
+body footer.aioz-footer {
+  display: grid;
+  gap: 4px;
+  margin: 36px 0 0;
+  padding: 18px 0 6px;
+  border-top: 1px solid var(--aioz-border);
+  color: var(--aioz-muted);
+  font-size: .875rem;
+  line-height: 1.55;
+  text-align: center;
+}
+.aioz-footer p { margin: 0; }
+body footer.aioz-footer a { color: var(--aioz-blue); text-decoration: underline; }
+.aioz-footer-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; }
+
+@media (max-width: 640px) {
+  .container { padding-inline: 14px; }
+  body:has(.aioz-workspace) { padding-bottom: 160px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .aioz-home a.card { transition: none; }
+}
+
+.aioz-compact .desc summary { cursor: pointer; color: var(--aioz-blue); }
+.aioz-compact .controls > label { display: block; margin-bottom: 6px; font-weight: 600; }
+.aioz-compact .controls > .note { margin: 12px 0; }
+.aioz-wide :is(.merge-panel, .report-wrap) { min-width: 0; }
+.aioz-not-found { max-width: 600px; margin: 64px auto; padding: 0 20px; }

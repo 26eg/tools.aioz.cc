@@ -3,9 +3,11 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { engine as e } from './load-desensitizer-test.mjs';
-const home=path.resolve('../../本地项目/工作簿脱敏与恢复');
-const input=path.join(home,'测试数据/原始样本/日利润报表-2026-09.xlsx');
-const output=path.join(home,'测试结果',`多文件回归-${e.timestamp()}`);await mkdir(output,{recursive:true});
+const sampleFile = process.argv[2] || process.env.AIOZ_REAL_SAMPLE_FILE;
+if (!sampleFile) throw new Error('Provide a sample file argument or set AIOZ_REAL_SAMPLE_FILE.');
+const input = path.resolve(sampleFile);
+const output = path.resolve(process.argv[3] || `.test-output/batch-sample-${e.timestamp()}`);
+await mkdir(output, { recursive: true });
 const source=new Uint8Array(await readFile(input)), hash=await e.sha256(source);
 const expectedLegacy=await e.maskWorkbook(source,path.basename(input));
 const modified=e.readBook(source);
@@ -38,4 +40,4 @@ for(const rows of [1000,10000]){
  const t=performance.now(),rr=await e.maskBatch(ff,pp);performanceCases.push({files:2,rowsPerFile:rows,storedCells:2*(rows+1)*4,inputBytes:fixture.length*2,outputBytes:rr.bytes.length,mappings:rr.stats.unique,elapsedMs:Math.round(performance.now()-t),nodeProcessPeakRssKiB:process.resourceUsage().maxRSS});
 }
 const summary={source:input,sourceSha256:hash,sourceUnchanged:true,files:checks,stats:result.stats,elapsedMs,dictionary:'批次脱敏字典.xlsx',sharedAsinVerified:true,performanceCases,environment:{node:process.version,platform:process.platform,arch:process.arch,cpu:os.cpus()[0]?.model,ramGiB:Math.round(os.totalmem()/1024**3)},output};
-await writeFile(path.join(output,'多文件验证结果.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify(summary,null,2));
+await writeFile(path.join(output,'多文件验证结果.json'),JSON.stringify(summary,null,2));console.log('Workbook validation passed. Detailed results were saved locally.');

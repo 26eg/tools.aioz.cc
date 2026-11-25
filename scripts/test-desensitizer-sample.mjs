@@ -3,8 +3,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { engine as e } from './load-desensitizer-test.mjs';
 
-const input = path.resolve(process.argv[2] ?? '../../本地项目/工作簿脱敏与恢复/测试数据/原始样本/日利润报表-2026-09.xlsx');
-const output = path.resolve(process.argv[3] ?? `../../本地项目/工作簿脱敏与恢复/测试结果/单文件回归-${e.timestamp()}`);
+const sampleFile = process.argv[2] || process.env.AIOZ_REAL_SAMPLE_FILE;
+if (!sampleFile) throw new Error('Provide a sample file argument or set AIOZ_REAL_SAMPLE_FILE.');
+const input = path.resolve(sampleFile);
+const output = path.resolve(process.argv[3] || `.test-output/sample-${e.timestamp()}`);
 const bytes = new Uint8Array(await readFile(input));
 const sourceHash = await e.sha256(bytes);
 const source = e.readBook(bytes);
@@ -58,4 +60,4 @@ const summary = {
   files: { zip: result.filename, workbook: result.workbookName, dictionary: result.dictionaryName, restored: restored.filename, html: '分析报告测试.html', restoredHtml: report.filename },
 };
 await writeFile(path.join(output, '验证结果.json'), JSON.stringify(summary, null, 2));
-console.log(JSON.stringify(summary, null, 2));
+console.log('Workbook validation passed. Detailed results were saved locally.');

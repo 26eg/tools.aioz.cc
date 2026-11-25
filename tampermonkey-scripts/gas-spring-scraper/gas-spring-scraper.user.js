@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         气弹簧产品信息抓取
+// @name         产品信息采集
 // @namespace    https://github.com/26eg/tools.aioz.cc
 // @version      1.2.2
-// @description  自动抓取气弹簧产品页面的5类信息，在新标签页展示并支持一键复制
+// @description  采集受支持产品页面的 5 类信息，在新标签页展示并支持一键复制
 // @author       26eg
 // @homepageURL  https://tools.aioz.cc/tampermonkey-scripts/
 // @updateURL    https://tools.aioz.cc/tampermonkey-scripts/gas-spring-scraper/gas-spring-scraper.user.js

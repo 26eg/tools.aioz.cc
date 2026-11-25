@@ -5,6 +5,8 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { engine as e } from './load-desensitizer-test.mjs';
 
+const sampleDirectory = process.env.AIOZ_REAL_SAMPLE_DIR;
+if (!sampleDirectory) throw new Error('Set AIOZ_REAL_SAMPLE_DIR to a directory containing the local workbook samples.');
 const root = process.cwd();
 const output = path.resolve(process.env.AIOZ_BROWSER_OUTPUT ?? '.test-output/matrix-20261104');
 await mkdir(output, { recursive: true });
@@ -16,7 +18,7 @@ const server = createServer(async (request, response) => {
   try {
     if (request.method !== 'GET') { response.writeHead(405).end(); return; }
     let pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-    if (!pathname.startsWith('/xlsx-desensitizer/') && pathname !== '/' && pathname !== '/index.html' && pathname !== '/favicon.ico') { response.writeHead(404).end(); return; }
+    if (!pathname.startsWith('/xlsx-desensitizer/') && pathname !== '/' && pathname !== '/index.html' && pathname !== '/site.css' && pathname !== '/favicon.ico') { response.writeHead(404).end(); return; }
     if (pathname === '/favicon.ico') { response.writeHead(204).end(); return; }
     let filename = path.resolve(root, `.${pathname}`);
     if (!filename.startsWith(`${root}${path.sep}`) && filename !== root) { response.writeHead(403).end(); return; }
@@ -32,7 +34,7 @@ let browser;
 try {
   browser = await chromium.launch({ headless: true, ...(process.env.AIOZ_BROWSER_CHANNEL ? { channel: process.env.AIOZ_BROWSER_CHANNEL } : {}) });
   const context=await browser.newContext({acceptDownloads:true,viewport:{width:1440,height:1000}}),page=await context.newPage();const errors=[],requests=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});context.on('request',r=>requests.push({url:r.url(),method:r.method(),body:r.postData()}));
-  const dir=path.resolve('../../本地项目/工作簿脱敏与恢复/测试数据/原始样本'),names=(await(await import('node:fs/promises')).readdir(dir)).filter(n=>n.endsWith('.xlsx')).sort(),files=names.map(n=>path.join(dir,n)),hashes=await Promise.all(files.map(async f=>e.sha256(new Uint8Array(await readFile(f)))));
+  const dir=path.resolve(sampleDirectory),names=(await(await import('node:fs/promises')).readdir(dir)).filter(n=>n.endsWith('.xlsx')).sort(),files=names.map(n=>path.join(dir,n)),hashes=await Promise.all(files.map(async f=>e.sha256(new Uint8Array(await readFile(f)))));
   await page.goto(`${base}/xlsx-desensitizer/`);await page.locator('#sourceFile').setInputFiles(files);await page.waitForFunction(()=>!document.getElementById('analysis').classList.contains('hidden')&&document.getElementById('cancel').classList.contains('hidden'));
   assert.equal(await page.locator('#matrixRoot').isVisible(),true);assert.equal(await page.locator('#legacyBoard').isVisible(),false);assert.equal(await page.locator('#mappingGroups').isVisible(),false);
   assert.equal(await page.locator('.mapping-matrix thead th').count(),4);
@@ -57,7 +59,7 @@ try {
   await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await page.locator('#matrixRoot').getByRole('button',{name:'＋ 新建映射组',exact:true}).click();assert.equal(await page.locator('#groupPicker').evaluate(n=>n.scrollWidth<=n.clientWidth),true);await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.getElementById('groupPicker').open);await page.screenshot({path:path.join(output,'04-matrix-mobile.png'),fullPage:false});
   await page.locator('#clear').click();assert.equal(await page.locator('#dockDownload').getAttribute('href'),null);assert.equal(await page.locator('#dockRun').isDisabled(),true);
   for(const [i,f]of files.entries())assert.equal(await e.sha256(new Uint8Array(await readFile(f))),hashes[i]);assert.deepEqual(errors,[]);assert.ok(requests.every(r=>r.method==='GET'&&r.url.startsWith(base)&&r.body===null));
-  const summary={date:'2026-11-04',browser:browser.version(),matrixDefault:true,multiSelectSameAndCrossSheet:true,onlySelectedFieldsMoved:true,associationMembersVerified:association.groups.reduce((n,g)=>n+g.members.length,0),associationExportPassed:true,restorationPassed:true,sentinelDatesPassed:true,fixedDownloadVisible:true,staleResultRevoked:true,mobilePassed:true,offlinePassed:true,originalsUnchanged:true,consoleErrors:errors,requests};await writeFile(path.join(output,'validation.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify(summary,null,2));await context.close();
+  const summary={date:'2026-11-04',browser:browser.version(),matrixDefault:true,multiSelectSameAndCrossSheet:true,onlySelectedFieldsMoved:true,associationMembersVerified:association.groups.reduce((n,g)=>n+g.members.length,0),associationExportPassed:true,restorationPassed:true,sentinelDatesPassed:true,fixedDownloadVisible:true,staleResultRevoked:true,mobilePassed:true,offlinePassed:true,originalsUnchanged:true,consoleErrors:errors,requests};await writeFile(path.join(output,'validation.json'),JSON.stringify(summary,null,2));console.log('Workbook validation passed. Detailed results were saved locally.');await context.close();
 } finally {
   if (browser) await browser.close();
   await new Promise((resolve) => server.close(resolve));

@@ -59,9 +59,9 @@
     },
     {
       "id": "gas-spring-scraper",
-      "name": "气弹簧产品信息抓取",
+      "name": "产品信息采集",
       "version": "1.2.2",
-      "description": "自动抓取气弹簧产品页面的5类信息，在新标签页展示并支持一键复制",
+      "description": "采集受支持产品页面的 5 类信息，在新标签页展示并支持一键复制",
       "updated": "2026-07-22",
       "file": "gas-spring-scraper/gas-spring-scraper.user.js",
       "match": [

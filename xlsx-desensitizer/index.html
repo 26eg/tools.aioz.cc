@@ -8,11 +8,12 @@
   <title>工作簿脱敏与恢复 · AIOZ 效能工坊</title>
   <link rel="stylesheet" href="./style.css?v=7">
   <script type="module" src="./dist/app.js?v=7"></script>
+  <link rel="stylesheet" href="/site.css">
 </head>
 <body>
-<main class="container">
-  <a class="back" href="/">← 返回 AIOZ 效能工坊</a>
-  <header><div><p class="eyebrow">AIOZ · 数据工具</p><h1>工作簿脱敏与恢复</h1><p class="subtitle">用可恢复的编码替换名称，保留数据的分析价值。</p></div><span class="badge">本地处理</span></header>
+<main class="container aioz-workspace">
+  <a class="back aioz-back" href="/">← 返回 AIOZ 效能工坊</a>
+  <header><div><h1>工作簿脱敏与恢复</h1><p class="subtitle">用可恢复的编码替换名称，保留数据的分析价值。</p></div><span class="badge">本地处理</span></header>
   <p class="privacy">文件仅在当前浏览器内存中处理，服务器不接收、不存储文件。清空或关闭页面后释放文件数据。</p>
   <nav class="tabs" aria-label="工具功能">
     <button type="button" data-mode="mask" class="active" aria-pressed="true"><span>01</span> 数据脱敏</button>
@@ -68,7 +69,14 @@
     </section>
 
   </div>
-  <footer>© 2026 AIOZ 效能工坊 · <a href="./dist/THIRD-PARTY-LICENSES.txt">开源组件许可</a></footer>
+  <footer class="aioz-footer">
+    <p class="aioz-footer-links">
+      <a href="https://github.com/26eg/tools.aioz.cc" target="_blank" rel="noopener">GitHub 仓库</a>
+      <a href="./dist/THIRD-PARTY-LICENSES.txt">开源组件许可</a>
+    </p>
+    <p>© 2026 AIOZ 效能工坊 · 保留所有权利</p>
+    <p>Designed by 26eg · AI-assisted development</p>
+  </footer>
 <dialog id="fieldPicker" class="field-picker" aria-labelledby="pickerTitle">
   <div class="picker-head"><h3 id="pickerTitle">选择对应字段</h3><button id="pickerClose" class="secondary" type="button">关闭</button></div>
   <p id="pickerSource" class="picker-source"></p>

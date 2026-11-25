@@ -89,5 +89,5 @@ for (const dir of readdirSync(scriptsDir, { withFileTypes: true })) {
 
 entries.sort((a, b) => a.id.localeCompare(b.id));
 const manifest = { generatedAt: new Date().toISOString(), scripts: entries };
-writeFileSync(join(scriptsDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
+writeFileSync(process.argv[2] ?? join(scriptsDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 console.log(`manifest.json 已生成，共 ${entries.length} 个脚本`);
