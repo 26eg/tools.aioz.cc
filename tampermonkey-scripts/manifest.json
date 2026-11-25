@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-11-19T08:05:05.550Z",
+  "generatedAt": "2026-11-25T16:28:39.158Z",
   "scripts": [
     {
       "id": "amazon-category-insights-json-capture",
       "name": "Amazon 类目洞察数据采集器",
-      "version": "7.0.5",
+      "version": "7.0.6",
       "description": "主动请求类目洞察四类数据；四级目录遍历、15–45秒节点间隔、分批ZIP、断点续采与详细日志。",
-      "updated": "2026-11-19",
+      "updated": "2026-11-25",
       "file": "amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js",
       "match": [
         "https://sellercentral.amazon.com/selection/category-insights*",

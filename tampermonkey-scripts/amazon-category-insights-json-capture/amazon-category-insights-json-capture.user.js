@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Amazon 类目洞察数据采集器
 // @namespace    http://tampermonkey.net/
-// @version      7.0.5
+// @version      7.0.6
 // @description  主动请求类目洞察四类数据；四级目录遍历、15–45秒节点间隔、分批ZIP、断点续采与详细日志。
 // @homepageURL  https://tools.aioz.cc/tampermonkey-scripts/
 // @updateURL    https://tools.aioz.cc/tampermonkey-scripts/amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js
@@ -16,7 +16,7 @@
 "use strict";
 (() => {
 
-  var VERSION = "7.0.5";
+  var VERSION = "7.0.6";
   var FILTER_API = "/next/v2/getFilters";
   var KINDS = ["getPerformanceDashboard", "getFeaturesDashboard", "relatedAsin_top_grossing", "relatedAsin_new_successful"];
   var LABELS = { getPerformanceDashboard: "\u6240\u6709ASIN", getFeaturesDashboard: "\u4EA7\u54C1\u7279\u5F81\u8D8B\u52BF", relatedAsin_top_grossing: "\u6700\u7545\u9500ASIN", relatedAsin_new_successful: "\u65B0\u53D1\u5E03ASIN" };
@@ -127,7 +127,14 @@
     changed;
     entries = /* @__PURE__ */ new Map();
     seq = 0;
+    minimumSeq = 0;
+    reset() {
+      this.entries.clear();
+      this.minimumSeq = ++this.seq;
+      this.changed();
+    }
     put(type, market, cat, ptd, json, seq = ++this.seq) {
+      if (seq < this.minimumSeq) return;
       const key = directoryKey(type, market, cat, ptd);
       const items = options(json, type);
       if ((this.entries.get(key)?.seq || 0) > seq) return;
@@ -142,6 +149,7 @@
       return entry && Date.now() - entry.at <= 3e5 ? structuredClone(entry.items) : void 0;
     }
     observe(body, json, seq) {
+      if (seq < this.minimumSeq) return;
       let payload = body;
       if (typeof body === "string") {
         try {
@@ -451,7 +459,7 @@
       if (this.task) ops.push({ table: "tasks", value: structuredClone(this.task) });
       await this.write(ops);
     }
-    async http(url, body, timeoutMs = this.rt.timeout) {
+    async http(url, body, timeoutMs = this.rt.timeout, requestContext = this.task?.current ? contextLabel(this.task.current) : "\u83B7\u53D6\u76EE\u5F55") {
       if (this.controller.signal.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
       const requestId = `${this.task?.id || "directory"}-${this.requestSession}-${++this.requests}`;
       const abort = new AbortController();
@@ -464,7 +472,7 @@
         abort.abort(new DOMException(`\u5B8C\u6574\u54CD\u5E94\u8D85\u8FC7${timeoutMs / 1e3}\u79D2`, "TimeoutError"));
       }, timeoutMs);
       const trace = (errorType, reason) => ({ request_id: requestId, started_at: startedAt, ended_at: iso(), elapsed_ms: Math.max(0, this.rt.now() - started), timeout_ms: timeoutMs, http: receivedStatus && phase === "complete" ? receivedStatus : 0, received_http_status: receivedStatus, phase, error_type: errorType, reason });
-      this.log("I", `\u8BF7\u6C42 ${requestId}\uFF5C${url}\uFF5C\u8D85\u65F6${timeoutMs / 1e3}\u79D2\uFF5C${this.task?.current ? contextLabel(this.task.current) : "\u83B7\u53D6\u76EE\u5F55"}`);
+      this.log("I", `\u8BF7\u6C42 ${requestId}\uFF5C${url}\uFF5C\u8D85\u65F6${timeoutMs / 1e3}\u79D2\uFF5C${requestContext}`);
       try {
         const r = await this.fetcher(url, { method: "POST", credentials: "include", signal: abort.signal, headers: { accept: "application/json, text/plain, */*", "content-type": "application/json;charset=UTF-8" }, body: JSON.stringify(body) });
         receivedStatus = r.status;
@@ -477,7 +485,7 @@
           json = raw ? JSON.parse(raw) : void 0;
         } catch {
         }
-        this.log("I", `\u54CD\u5E94 ${requestId}\uFF5CHTTP ${r.status}\uFF5C${this.rt.now() - started}ms`);
+        this.log("I", `\u54CD\u5E94 ${requestId}\uFF5CHTTP ${r.status}\uFF5C${this.rt.now() - started}ms\uFF5C${requestContext}`);
         return { status: r.status, raw, json, retry: r.status === 429 || [500, 502, 503, 504].includes(r.status), retryAfter: retryAfter(r.headers.get("Retry-After"), this.rt.now()), requestId, trace: trace(r.ok ? void 0 : "http", r.ok ? void 0 : `HTTP ${r.status}`) };
       } catch (e) {
         const errorType = this.controller.signal.aborted ? "cancelled" : timedOut ? "timeout" : "network";
@@ -507,7 +515,8 @@
       let rate = false;
       for (let attempt = 0; attempt <= this.rt.retries; attempt++) {
         const seq = ++this.cache.seq;
-        const r = await this.http("/next/v2/getFilters", directoryPayload(type, market || void 0, cat || void 0, ptd || void 0));
+        const directoryContext = `\u76EE\u5F55 ${type}\uFF5C\u5546\u57CE=${market || "-"}\uFF5C\u7C7B\u522B=${cat || "-"}\uFF5C\u5546\u54C1\u7C7B\u578B=${ptd || "-"}`;
+        const r = await this.http("/next/v2/getFilters", directoryPayload(type, market || void 0, cat || void 0, ptd || void 0), this.rt.timeout, directoryContext);
         if (r.aborted) throw new Stopped("\u5DF2\u7EC8\u6B62");
         if ([401, 403].includes(r.status)) throw new AuthError(`\u76EE\u5F55 HTTP ${r.status}`);
         if (r.status === 429) {
@@ -719,6 +728,8 @@
     async run(start2, config2 = DEFAULTS, resume = false, repairTargets) {
       if (this.running) throw new Error("\u5DF2\u6709\u4EFB\u52A1\u6B63\u5728\u8FD0\u884C");
       if (this.fatal) throw new Error("\u5B58\u50A8\u6545\u969C\u5C1A\u672A\u6062\u590D\uFF0C\u8BF7\u5148\u4E0B\u8F7D\u5185\u5B58\u6570\u636E");
+      this.requests = 0;
+      this.requestSession = Math.random().toString(36).slice(2);
       this.running = true;
       this.controller = new AbortController();
       try {
@@ -732,7 +743,7 @@
           this.task.reason = "";
         } else {
           if (repairTargets && !repairTargets.length) throw new Error("\u91CD\u91C7\u6E05\u5355\u6CA1\u6709\u8282\u70B9");
-          this.task = { key: "active", id: `task-${this.rt.now()}-${Math.random().toString(36).slice(2)}`, config: normalizeConfig(repairTargets ? { ...config2, totalLimit: 0 } : config2), start: structuredClone(start2), current: null, status: "running", nodes: {}, failures: {}, mode: repairTargets ? "repair" : "traverse", repairTargets: repairTargets ? structuredClone(repairTargets) : void 0, cursor: 0, count: 0, reason: "", cooldownUntil: 0, createdAt: this.rt.now() };
+          this.task = { key: "active", id: `task-${this.rt.now()}-${Math.random().toString(36).slice(2)}`, config: normalizeConfig(repairTargets ? { ...config2, totalLimit: 0 } : config2), start: structuredClone(start2), current: null, status: "running", nodes: {}, failures: {}, mode: repairTargets ? "repair" : "traverse", repairTargets: repairTargets ? structuredClone(repairTargets) : void 0, cursor: 0, downloadedCount: 0, count: 0, reason: "", cooldownUntil: 0, createdAt: this.rt.now() };
         }
         this.log("I", `===== \u4EFB\u52A1${resume ? "\u7EED\u91C7" : "\u5F00\u59CB"}\uFF5C${contextLabel(this.task.start)}\uFF5C\u6BCF\u6279${this.task.config.target}\u8282\u70B9\uFF5C\u603B\u91CF${this.task.config.totalLimit || "\u4E0D\u9650"}\uFF5C\u95F4\u9694${this.task.config.delayMin}\u2013${this.task.config.delayMax}\u79D2\uFF5C\u5FAA\u73AF${Object.entries(this.task.config.levels).filter(([, v]) => v).map(([k]) => k).join("\u2192")} =====`);
         this.changed();
@@ -827,7 +838,7 @@
         this.running = false;
         this.changed();
         this.log("I", `\u672C\u6B21\u4EFB\u52A1\u7ED3\u675F\uFF5C\u6210\u529F${this.task?.count || 0}\u8282\u70B9\uFF5C\u5931\u8D25\u5F85\u91CD\u91C7${Object.keys(this.task?.failures || {}).length}\u8282\u70B9\uFF5C${this.task?.status || "\u672A\u5F00\u59CB"}`);
-        if (this.task) {
+        if (this.task && Object.keys(this.task.failures || {}).length > 0) {
           try {
             if (!await this.failureReporter(this.task)) this.log("E", "\u5931\u8D25\u91CD\u91C7log\u4E0B\u8F7D\u672A\u6210\u529F\u89E6\u53D1\uFF0C\u53EF\u4F7F\u7528\u6D6E\u7A97\u6309\u94AE\u91CD\u8BD5\u5BFC\u51FA");
           } catch (e) {
@@ -835,6 +846,16 @@
           }
         }
       }
+    }
+    releaseRuntimeCache() {
+      if (this.running) throw new Error("\u8FD0\u884C\u4E2D\u4E0D\u80FD\u91CD\u7F6E\u7F13\u5B58");
+      this.requests = 0;
+      this.requestSession = Math.random().toString(36).slice(2);
+      if (this.task?.status === "completed" && !this.fatal) {
+        this.deleted.clear();
+        this.cache.reset();
+      }
+      this.changed();
     }
     pendingKeys() {
       return [...this.batches.values()].filter(nodeComplete).map((b) => b.key);
@@ -847,6 +868,7 @@
     }
     async remove(keys, downloaded = false) {
       const selected = keys.filter((k) => this.batches.has(k));
+      const downloadedNodes = downloaded ? selected.filter((k) => this.batches.get(k)?.taskId === this.task?.id && nodeComplete(this.batches.get(k))).length : 0;
       for (const key of selected) this.deleted.add(key);
       try {
         await this.serial(async () => {
@@ -854,10 +876,14 @@
           if (task) {
             for (const [path, node] of Object.entries(task.nodes)) if (selected.includes(node.batchKey)) delete task.nodes[path];
           }
+          if (task && downloadedNodes) task.downloadedCount = (task.downloadedCount || 0) + downloadedNodes;
           const ops = selected.map((key) => ({ table: "batches", key, delete: true }));
           if (task) ops.push({ table: "tasks", value: task });
           await this.write(ops);
-          if (this.task && task) this.task.nodes = task.nodes;
+          if (this.task && task) {
+            this.task.nodes = task.nodes;
+            this.task.downloadedCount = task.downloadedCount;
+          }
           for (const key of selected) this.batches.delete(key);
         });
       } catch (e) {
@@ -1835,14 +1861,38 @@
     apply();
   }
 
-  var logs = [];
+  var RunLog = class {
+    entries = [];
+    displayFrom = 0;
+    append(level, message) {
+      this.entries.push({ at: (/* @__PURE__ */ new Date()).toISOString(), level, message });
+    }
+    begin() {
+      this.entries.length = 0;
+      this.displayFrom = 0;
+    }
+    clearDisplay() {
+      this.displayFrom = this.entries.length;
+    }
+    recent() {
+      return this.entries.slice(Math.max(this.displayFrom, this.entries.length - 800));
+    }
+    exportText(task, requests, page) {
+      return [`Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION}`, `\u9875\u9762\uFF1A${page}`, `\u4EFB\u52A1\uFF1A${task?.id || "\u5C1A\u672A\u5F00\u59CB"}\uFF5C\u72B6\u6001\uFF1A${task?.status || "idle"}\uFF5C\u8BF7\u6C42\u5C1D\u8BD5\uFF1A${requests}`, `\u6210\u529F\u8282\u70B9\uFF1A${task?.count || 0}\uFF5C\u5DF2\u89E6\u53D1\u4E0B\u8F7D\u8282\u70B9\uFF1A${task?.downloadedCount || 0}\uFF5C\u5931\u8D25\u5F85\u91CD\u91C7\uFF1A${Object.keys(task?.failures || {}).length}\uFF5C\u5B8C\u6574\u65E5\u5FD7\u6761\u6570\uFF1A${this.entries.length}`, ...this.entries.map((l) => `[${l.at}] [${l.level}] ${l.message}`), ""].join("\n");
+    }
+  };
+
+  var runLog = new RunLog();
+  var logs = runLog.entries;
+  var logStatus = "";
+  var pendingTaskLog = false;
   var render = () => {
   };
   var renderLog = () => {
   };
   var log = (level, message) => {
-    logs.push({ at: (/* @__PURE__ */ new Date()).toISOString(), level, message });
-    if (logs.length > 3e3) logs.shift();
+    runLog.append(level, message);
+    logStatus = "";
     renderLog();
   };
   var cache = new DirectoryCache(log, () => render());
@@ -1853,6 +1903,24 @@
   engine.exporter = (keys, tag) => downloads.batches(keys, tag);
   engine.failureReporter = (task) => downloads.failures(task);
   var ready = engine.restore();
+  function finishTaskLog() {
+    try {
+      const text2 = runLog.exportText(engine.task, engine.requests, location.href);
+      downloads.saver(new Blob([text2], { type: "text/plain;charset=utf-8" }), `\u7C7B\u76EE\u6570\u636E\u6293\u53D6_v${VERSION}_${stamp()}.log`);
+      runLog.begin();
+      logStatus = "\u672C\u6B21\u65E5\u5FD7\u5DF2\u81EA\u52A8\u5BFC\u51FA\u5E76\u6E05\u7A7A";
+      renderLog();
+      engine.releaseRuntimeCache();
+      pendingTaskLog = false;
+      return true;
+    } catch (e) {
+      log("E", `\u672C\u6B21\u5B8C\u6574\u8FD0\u884C\u65E5\u5FD7\u81EA\u52A8\u5BFC\u51FA\u5931\u8D25\uFF0C\u65E5\u5FD7\u5DF2\u4FDD\u7559\uFF0C\u53EF\u70B9\u51FB\u4E0B\u8F7D\u65E5\u5FD7\u91CD\u8BD5\uFF1A${String(e)}`);
+      pendingTaskLog = true;
+      logStatus = "\u81EA\u52A8\u5BFC\u51FA\u5931\u8D25\uFF0C\u65E5\u5FD7\u4FDD\u7559";
+      renderLog();
+      return false;
+    }
+  }
   var config = structuredClone(DEFAULTS);
   var initialized = false;
   var groupLabels = { keyword: "\u5173\u952E\u8BCD", ptype: "\u5546\u54C1\u7C7B\u578B", category: "\u7C7B\u522B", store: "\u5546\u57CE" };
@@ -1882,6 +1950,7 @@
     if (engine.running) return;
     await ready;
     if (!initialized) throw new Error("\u521D\u59CB\u5316\u5C1A\u672A\u5B8C\u6210");
+    if (engine.fatal) throw new Error("\u8BF7\u5148\u4E0B\u8F7D\u4FDD\u7559\u7684\u6570\u636E\u548C\u65E5\u5FD7\uFF0C\u5904\u7406\u5B58\u50A8\u6545\u969C\u540E\u518D\u5F00\u59CB\u65B0\u4EFB\u52A1");
     const start2 = repairTargets?.[0] || (resume && engine.task ? engine.task.start : readContext());
     if (!navigator.locks) throw new Error("\u5F53\u524D\u6D4F\u89C8\u5668\u4E0D\u652F\u6301 Web Locks\uFF0C\u8BF7\u4F7F\u7528\u65B0\u7248 Chrome");
     await navigator.locks.request("amz_category_node_mapper_v1_active_tab", { ifAvailable: true }, async (lock) => {
@@ -1889,7 +1958,12 @@
         log("W", "\u5DF2\u6709\u91C7\u96C6\u4EFB\u52A1\u8FD0\u884C\uFF0C\u8BF7\u5148\u7EC8\u6B62\u5176\u4ED6\u6807\u7B7E\u9875\u6216\u8282\u70B9\u6620\u5C04\u91C7\u96C6\u5668");
         return;
       }
+      if (pendingTaskLog && !finishTaskLog()) throw new Error("\u4E0A\u6B21\u5B8C\u6574\u65E5\u5FD7\u5C1A\u672A\u6210\u529F\u5BFC\u51FA\uFF0C\u5DF2\u4FDD\u7559\u65E5\u5FD7\uFF0C\u8BF7\u5148\u70B9\u51FB\u4E0B\u8F7D\u65E5\u5FD7\u91CD\u8BD5");
+      runLog.begin();
+      logStatus = "";
+      renderLog();
       await engine.run(start2, config, resume, repairTargets);
+      finishTaskLog();
     });
   }
   function safe(work) {
@@ -1920,7 +1994,7 @@
     <div class="row">\u8282\u70B9\u95F4\u968F\u673A\u5EF6\u8FDF <input id="min" type="number" min="15" value="15"> \uFF5E <input id="max" type="number" min="15" value="45"> \u79D2\uFF08\u6700\u4F4E15\u79D2\uFF09</div>
     <div class="row"><button id="start" class="primary">\u5F00\u59CB\u6293\u53D6</button><button id="stop" class="warn">\u7EC8\u6B62\u6293\u53D6</button><button id="resume">\u7EE7\u7EED\u672A\u5B8C\u6210\u4EFB\u52A1</button></div><div class="row"><button id="retry-import">\u5BFC\u5165\u5931\u8D25\u91CD\u91C7 log</button><button id="retry-download">\u4E0B\u8F7D\u5931\u8D25\u91CD\u91C7 log</button><input id="retry-file" type="file" accept=".log,text/plain" hidden></div><div id="preview"></div><div id="progress"></div></div>
     <div id="actions" class="row"><button id="all">\u5168\u9009</button><button id="invert">\u53CD\u9009</button><button id="download" class="primary">\u4E0B\u8F7D\u9009\u4E2D</button><button id="delete" class="danger">\u5220\u9664\u9009\u4E2D</button><button id="delete-all" class="danger">\u5220\u9664\u5168\u90E8</button></div>
-    <div id="workspace"><div id="list"></div><div id="divider" role="separator" tabindex="0" aria-label="\u8C03\u6574\u8282\u70B9\u5217\u8868\u4E0E\u8FD0\u884C\u65E5\u5FD7\u9AD8\u5EA6" aria-orientation="horizontal" aria-controls="list log-section" title="\u62D6\u52A8\u8C03\u6574\u5217\u8868\u548C\u65E5\u5FD7\u9AD8\u5EA6\uFF1B\u652F\u6301\u4E0A\u4E0B\u65B9\u5411\u952E"></div><div id="log-section"><div id="loghead"><b>\u8FD0\u884C\u65E5\u5FD7</b><div><button id="log-download">\u4E0B\u8F7D\u65E5\u5FD7</button> <button id="log-clear">\u6E05\u7A7A\u65E5\u5FD7</button></div></div><div id="logs"></div></div></div></section>`;
+    <div id="workspace"><div id="list"></div><div id="divider" role="separator" tabindex="0" aria-label="\u8C03\u6574\u8282\u70B9\u5217\u8868\u4E0E\u8FD0\u884C\u65E5\u5FD7\u9AD8\u5EA6" aria-orientation="horizontal" aria-controls="list log-section" title="\u62D6\u52A8\u8C03\u6574\u5217\u8868\u548C\u65E5\u5FD7\u9AD8\u5EA6\uFF1B\u652F\u6301\u4E0A\u4E0B\u65B9\u5411\u952E"></div><div id="log-section"><div id="loghead"><div><b>\u8FD0\u884C\u65E5\u5FD7</b> <span id="log-note" class="small"></span></div><div><button id="log-download">\u4E0B\u8F7D\u65E5\u5FD7</button> <button id="log-clear">\u6E05\u7A7A\u65E5\u5FD7</button></div></div><div id="logs"></div></div></div></section>`;
     const element = (id) => root.getElementById(id);
     const input = (id) => element(id);
     const button = (id, fn) => element(id).onclick = safe(fn);
@@ -1990,22 +2064,22 @@
     };
     button("delete", () => remove(selected()));
     button("delete-all", () => remove(engine.visible().map((b) => b.key)));
-    button("log-download", () => saveAs(new Blob([`Amazon \u7C7B\u76EE\u6D1E\u5BDF\u6570\u636E\u91C7\u96C6\u5668 v${VERSION}
-\u9875\u9762\uFF1A${location.href}
-${logs.map((l) => `[${l.at}] [${l.level}] ${l.message}`).join("\n")}`], { type: "text/plain;charset=utf-8" }), `\u7C7B\u76EE\u6570\u636E\u6293\u53D6_v${VERSION}_${stamp()}.log`));
+    button("log-download", () => pendingTaskLog && !engine.running ? finishTaskLog() : downloads.saver(new Blob([runLog.exportText(engine.task, engine.requests, location.href)], { type: "text/plain;charset=utf-8" }), `\u7C7B\u76EE\u6570\u636E\u6293\u53D6_v${VERSION}_${stamp()}.log`));
     button("log-clear", () => {
-      logs.length = 0;
+      runLog.clearDisplay();
       renderLog();
     });
     renderLog = () => {
       const box = element("logs"), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30, scroll = box.scrollTop;
-      box.replaceChildren(...logs.slice(-800).map((l) => {
+      box.replaceChildren(...runLog.recent().map((l) => {
         const el = document.createElement("div");
         el.className = l.level;
         el.textContent = `[${l.at.slice(11, 23)}] ${l.message}`;
         return el;
       }));
       box.scrollTop = atBottom ? box.scrollHeight : scroll;
+      element("log-note").textContent = logStatus;
+      element("log-download").disabled = logs.length === 0;
     };
     const row = (b) => {
       const div = document.createElement("div");
@@ -2047,7 +2121,7 @@ ${logs.map((l) => `[${l.at}] [${l.level}] ${l.message}`).join("\n")}`], { type: 
     };
     render = () => {
       const running = engine.running, visible = engine.visible();
-      element("stats").textContent = `\u8282\u70B9 ${visible.length} \xB7 \u5F85\u91CD\u91C7 ${Object.keys(engine.task?.failures || {}).length}`;
+      element("stats").textContent = `\u5DF2\u4E0B\u8F7D ${engine.task?.downloadedCount || 0} \xB7 \u5931\u8D25 ${Object.keys(engine.task?.failures || {}).length}`;
       for (const cb of root.querySelectorAll("[data-level]")) {
         const k = cb.dataset.level;
         cb.checked = config.levels[k];
@@ -2058,7 +2132,7 @@ ${logs.map((l) => `[${l.at}] [${l.level}] ${l.message}`).join("\n")}`], { type: 
       element("stop").disabled = !running;
       element("resume").disabled = running || !initialized || !engine.task;
       element("retry-import").disabled = running || !initialized;
-      element("retry-download").disabled = running || !engine.task;
+      element("retry-download").disabled = running || !engine.task || Object.keys(engine.task.failures || {}).length === 0;
       element("start").textContent = running ? "\u6293\u53D6\u4E2D\u2026" : "\u5F00\u59CB\u6293\u53D6";
       let c = engine.task?.current || engine.task?.start;
       if (!running) {
