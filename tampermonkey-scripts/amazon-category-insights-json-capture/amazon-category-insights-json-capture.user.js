@@ -13,6 +13,8 @@
 // @noframes
 // @grant        none
 // ==/UserScript==
+// AIOZ proprietary portions: Copyright (c) 2026 26eg. All rights reserved.
+// Source and permissions: https://tools.aioz.cc/licenses.html
 "use strict";
 (() => {
 

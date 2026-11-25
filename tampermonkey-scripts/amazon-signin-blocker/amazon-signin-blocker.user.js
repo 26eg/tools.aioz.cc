@@ -31,7 +31,10 @@
 // @match        *://*.amazon.sg/*
 // @run-at       document-start
 // @grant        none
+// @license      AGPL-3.0-only
 // ==/UserScript==
+// Copyright (c) 2026 26eg
+// Source and permissions: https://tools.aioz.cc/licenses.html
 
 (function() {
     'use strict';

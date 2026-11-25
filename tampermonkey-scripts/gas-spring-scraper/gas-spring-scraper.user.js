@@ -14,7 +14,10 @@
 // @connect      liftsupportsdepot.myconvermax.com
 // @connect      webcache.yiparts.com
 // @run-at       document-idle
+// @license      AGPL-3.0-only
 // ==/UserScript==
+// Copyright (c) 2026 26eg
+// Source and permissions: https://tools.aioz.cc/licenses.html
 
 /*
   run-at 说明：

@@ -6,9 +6,11 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const output = join(root, '.pages-dist');
 const assets = [
-  'index.html', '404.html', 'site.css', '_headers', '_redirects',
+  'index.html', '404.html', 'licenses.html', 'LICENSE', 'BRAND.md', 'THIRD-PARTY-NOTICES.md',
+  'site.css', '_headers', '_redirects',
   'qr-code-tool/index.html',
   'qr-code-tool/vendor/jsQR.js', 'qr-code-tool/vendor/qrcode-generator.js',
+  'qr-code-tool/vendor/LICENSE-jsQR.txt', 'qr-code-tool/vendor/LICENSE-qrcode-generator.txt',
   'tampermonkey-scripts/index.html',
   'tampermonkey-scripts/amazon-category-insights-json-capture/amazon-category-insights-json-capture.user.js',
   'tampermonkey-scripts/amazon-category-insights-json-capture/LICENSE-fflate.txt',
@@ -22,6 +24,7 @@ const assets = [
   'xlsx-image-link-to-image-tool/index.html',
   'xlsx-workbook-merger/index.html', 'xlsx-workbook-merger/app.js', 'xlsx-workbook-merger/core.js',
   'xlsx-workbook-merger/vendor/exceljs.min.js', 'xlsx-workbook-merger/vendor/LICENSE.exceljs.txt',
+  'xlsx-workbook-merger/vendor/THIRD-PARTY-EXCELJS.txt',
 ];
 const manifest = 'tampermonkey-scripts/manifest.json';
 const allowed = [...assets, manifest];
@@ -46,5 +49,5 @@ for (const asset of assets) {
   await mkdir(dirname(target), { recursive: true });
   await copyFile(join(root, asset), target);
 }
-execFileSync(process.execPath, [join(root, 'scripts/build-manifest.mjs'), join(output, manifest)], { stdio: 'inherit' });
+execFileSync(process.execPath, [join(root, 'scripts/build-manifest.mjs'), join(output, manifest), output], { stdio: 'inherit' });
 console.log(`Pages preview built in ${output}`);

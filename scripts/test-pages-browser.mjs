@@ -19,6 +19,7 @@ try {
     for (const route of routes) {
       assert.equal((await page.goto(base + route)).status(), 200, route);
       assert.equal(await page.locator('.aioz-footer p').count(), 3, route);
+      assert.equal(await page.getByRole('link', { name: '源码与许可' }).getAttribute('href'), '/licenses.html');
       assert.equal(await page.locator('.aioz-footer p').last().textContent(), 'Designed by 26eg · AI-assisted development');
       assert.equal(await page.getByRole('link', { name: 'GitHub 仓库' }).getAttribute('href'), 'https://github.com/26eg/tools.aioz.cc');
       if (route !== '/') assert.equal(await page.locator('.aioz-back').getAttribute('href'), '/');
@@ -39,7 +40,14 @@ try {
   for (const href of await install.evaluateAll((items) => items.map((item) => item.href))) {
     const response = await page.request.get(href);
     assert.equal(response.status(), 200);
-    assert.match(await response.text(), /==UserScript==/);
+    const script = await response.text();
+    assert.match(script, /==UserScript==/);
+    assert.match(script, /AIOZ_DISTRIBUTION_LICENSE/);
+    if (/amazon-signin-blocker|gas-spring-scraper/.test(href)) {
+      assert.match(script, /@license\s+AGPL-3\.0-only/);
+      assert.match(script, /GNU AFFERO GENERAL PUBLIC LICENSE/);
+    }
+
   }
 
   await page.goto(base + '/qr-code-tool/');
@@ -77,6 +85,14 @@ try {
   await page.locator('#mergeButton').click();
   await page.locator('#downloadLink').waitFor();
   assert.equal(await page.locator('#reportBody tr').count(), 2);
+
+  assert.equal((await page.goto(base + '/licenses.html')).status(), 200);
+  assert.ok(await page.locator('#corresponding-source').getAttribute('href'));
+  for (const path of ['/LICENSE', '/BRAND.md', '/THIRD-PARTY-NOTICES.md',
+    '/qr-code-tool/vendor/LICENSE-jsQR.txt', '/qr-code-tool/vendor/LICENSE-qrcode-generator.txt',
+    '/xlsx-workbook-merger/vendor/THIRD-PARTY-EXCELJS.txt']) {
+    assert.equal((await page.request.get(base + path)).status(), 200, path);
+  }
 
   const redirect = await page.request.get(base + '/xlsx-image-link-to-image-tool.html', { maxRedirects: 0 });
   assert.equal(redirect.status(), 301);

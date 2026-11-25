@@ -14,7 +14,7 @@ for (const [name, path] of [
   ['@xmldom/xmldom 0.9.12', '@xmldom/xmldom/LICENSE'],
   ['acorn 8.18.0', 'acorn/LICENSE'],
   ['parse5 8.0.1', 'parse5/LICENSE'],
-  ['entities (parse5 dependency)', 'entities/LICENSE'],
+  ['entities 8.1.0 (parse5 dependency)', 'entities/LICENSE'],
 ]) licenses.push(`${name}\n${await readFile(`node_modules/${path}`, 'utf8')}`);
 await writeFile('xlsx-desensitizer/dist/THIRD-PARTY-LICENSES.txt', licenses.join('\n\n'));
 console.log('Desensitizer browser bundles built.');

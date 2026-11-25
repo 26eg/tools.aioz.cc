@@ -9,7 +9,7 @@ const port = Number(process.env.AIOZ_PORT ?? 4175);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('AIOZ_PORT must be a valid port.');
 const headerFile = await readFile(path.join(root, '_headers'), 'utf8');
 const csp = headerFile.match(/Content-Security-Policy: (.*)/)?.[1];
-const types = { '.html': 'text/html;charset=utf-8', '.js': 'text/javascript;charset=utf-8', '.css': 'text/css;charset=utf-8', '.json': 'application/json', '.txt': 'text/plain;charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon' };
+const types = { '.html': 'text/html;charset=utf-8', '.js': 'text/javascript;charset=utf-8', '.css': 'text/css;charset=utf-8', '.json': 'application/json', '.txt': 'text/plain;charset=utf-8', '.md': 'text/markdown;charset=utf-8', '.png': 'image/png', '.svg': 'image/svg+xml', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon' };
 const server = createServer(async (request, response) => {
   try {
     if (request.method !== 'GET' && request.method !== 'HEAD') { response.writeHead(405).end(); return; }
@@ -19,13 +19,13 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (pathname === '/favicon.ico') { response.writeHead(204).end(); return; }
-    if (!/^\/(?:index\.html|site\.css)?$/.test(pathname) && !/^\/(?:xlsx-desensitizer|xlsx-workbook-merger|xlsx-image-link-to-image-tool|qr-code-tool|tampermonkey-scripts)\//.test(pathname)) { response.writeHead(404).end(); return; }
+    if (!/^\/(?:index\.html|licenses\.html|LICENSE|BRAND\.md|THIRD-PARTY-NOTICES\.md|site\.css)?$/.test(pathname) && !/^\/(?:xlsx-desensitizer|xlsx-workbook-merger|xlsx-image-link-to-image-tool|qr-code-tool|tampermonkey-scripts)\//.test(pathname)) { response.writeHead(404).end(); return; }
     if (pathname.split('/').some((part) => part.startsWith('.')) || pathname.includes('/src/')) { response.writeHead(404).end(); return; }
     let file = path.resolve(root, `.${pathname}`);
     if ((await stat(file)).isDirectory()) file = path.join(file, 'index.html');
     file = await realpath(file);
     if (!file.startsWith(`${root}${path.sep}`)) { response.writeHead(403).end(); return; }
-    const headers = { 'Content-Type': types[path.extname(file)] ?? 'application/octet-stream', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' };
+    const headers = { 'Content-Type': pathname === '/LICENSE' ? 'text/plain;charset=utf-8' : (types[path.extname(file)] ?? 'application/octet-stream'), 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' };
     if (pathname.startsWith('/xlsx-desensitizer/') && csp) headers['Content-Security-Policy'] = csp;
     response.writeHead(200, headers);
     response.end(request.method === 'HEAD' ? undefined : await readFile(file));

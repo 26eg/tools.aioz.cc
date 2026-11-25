@@ -91,3 +91,13 @@ entries.sort((a, b) => a.id.localeCompare(b.id));
 const manifest = { generatedAt: new Date().toISOString(), scripts: entries };
 writeFileSync(process.argv[2] ?? join(scriptsDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 console.log(`manifest.json 已生成，共 ${entries.length} 个脚本`);
+
+const pagesOutput = process.argv[3];
+if (pagesOutput || (process.env.CF_PAGES === '1' && !process.argv[2])) {
+  const revision = process.env.CF_PAGES_COMMIT_SHA;
+  if (process.env.CF_PAGES === '1' && (!revision || revision !== git(['rev-parse', 'HEAD']))) {
+    throw new Error('Cloudflare Pages commit does not match the checked-out source.');
+  }
+  const { prepareLicenseAssets } = await import('./prepare-license-assets.mjs');
+  prepareLicenseAssets(pagesOutput ?? root, revision);
+}

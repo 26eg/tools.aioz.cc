@@ -78,7 +78,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-entities (parse5 dependency)
+entities 8.1.0 (parse5 dependency)
 Copyright (c) Felix Böhm
 All rights reserved.
 

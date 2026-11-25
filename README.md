@@ -6,6 +6,16 @@
 
 项目初版及部分早期工具由 Claude 辅助开发。后续开发主要使用 Antigravity 和 Codex，涉及 Gemini 系列及 GPT-5.6／GPT-6 系列模型。
 
+## 源码与许可
+
+Copyright (c) 2026 26eg
+
+AIOZ 自有站点、通用网页工具、构建与测试代码，以及「Amazon Sign-in Blocker」「产品信息采集」的自有脚本代码，采用 [AGPL-3.0-only](LICENSE)。允许个人和商业使用。对外分发时按许可提供对应源码。若修改版支持通过网络交互，则向这些用户提供免费的对应源码获取途径。提供副本或支持服务可收费，接收者继续享有许可证赋予的权利。
+
+`tampermonkey-scripts/amazon-category-insights-json-capture/` 和 `tampermonkey-scripts/amazon-category-node-mapper/` 的自有代码由 26eg 保留权利，许可范围另行确认。官方安装入口提供脚本副本供正常使用。第三方组件适用 [各自的许可与版权声明](THIRD-PARTY-NOTICES.md)。项目标识使用见 [品牌声明](BRAND.md)。对第三方网站、接口和数据的访问与使用以各自适用规则为准。
+
+正式部署通过「源码与许可」页链接到对应的 Git 提交，其中包含可修改源码、依赖锁文件和构建脚本。自行分发或部署修改版时，提供其实际版本的对应源码。静态发布命令与输出目录见下方 Cloudflare Pages 配置。
+
 ## 目录结构
 
 | 路径 | 说明 |
